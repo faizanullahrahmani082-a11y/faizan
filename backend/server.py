@@ -798,12 +798,27 @@ async def update_appointment(
     
     update_doc = {}
     if update.status:
+        # Only doctor can mark completed
+        if update.status == "completed" and current_user.user_id != appt["doctor_id"]:
+            raise HTTPException(status_code=403, detail="Only doctor can mark appointment completed")
         update_doc["status"] = update.status
     if update.notes is not None:
         update_doc["notes"] = update.notes
     
     if update_doc:
         await db.appointments.update_one({"appointment_id": appointment_id}, {"$set": update_doc})
+        # Notify the other party
+        other_id = appt["doctor_id"] if current_user.user_id == appt["patient_id"] else appt["patient_id"]
+        await db.notifications.insert_one({
+            "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+            "user_id": other_id,
+            "type": "appointment_update",
+            "title": "Appointment Status Updated",
+            "message": f"Appointment is now {update.status or 'updated'}",
+            "data": {"appointment_id": appointment_id, "status": update.status},
+            "is_read": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
     
     appt = await db.appointments.find_one({"appointment_id": appointment_id}, {"_id": 0})
     return appt
@@ -1350,6 +1365,28 @@ async def download_file(
     record = await db.files.find_one({"file_id": file_id, "is_deleted": False}, {"_id": 0})
     if not record:
         raise HTTPException(status_code=404, detail="File not found")
+    
+    # Decode token to get user_id for ownership checks
+    requester_id = None
+    try:
+        if token.startswith('test_session_') or len(token) > 200:
+            session_doc = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+            requester_id = session_doc["user_id"] if session_doc else None
+        else:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            requester_id = payload.get("sub")
+    except JWTError:
+        pass
+    
+    # Prescriptions: only owner OR pharmacy linked via an order can view
+    if record.get("purpose") == "prescription" and requester_id != record["owner_id"]:
+        # Check if requester is a pharmacy with an order referencing this prescription
+        linked = await db.orders.find_one(
+            {"prescription_file_id": file_id, "pharmacy_id": requester_id},
+            {"_id": 0}
+        )
+        if not linked:
+            raise HTTPException(status_code=403, detail="Not authorized to view this file")
     
     try:
         data, content_type = get_object(record["storage_path"])

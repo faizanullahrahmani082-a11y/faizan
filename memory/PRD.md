@@ -1,71 +1,58 @@
 # Afghan Health Portal - PRD
 
 ## Original Problem Statement
-3-language (Pashto, Farsi/Dari, English) health application supporting Doctor/Patient/Pharmacy/Biomedical Engineer with profile, GPS, reviews, appointments, medicine catalog, AI assistant, maps, video calls, and premium subscriptions.
+3-language (Pashto, Farsi/Dari, English) health application for Doctor/Patient/Pharmacy/Biomedical Engineer with profile, GPS, reviews, appointments, medicines, AI assistant, maps, video calls, premium subscriptions, file uploads, notifications, doctor scheduling, medicine orders, and commission tracking.
 
 ## Tech Stack
-- **Backend**: FastAPI + Motor (MongoDB async), JWT + Google OAuth, emergentintegrations LlmChat (Gemini 3.1 Pro)
+- **Backend**: FastAPI + Motor (MongoDB), JWT + Google OAuth, emergentintegrations (Gemini 3.1 Pro), Emergent Object Storage
 - **Frontend**: React 19, React Router 7, Tailwind, Shadcn UI, Leaflet (maps), SimplePeer (WebRTC)
-- **Languages**: EN (Outfit) / FA-DR (Vazirmatn) / PS (Vazirmatn) with RTL support
-
-## Color Palette
-- Primary: Medical Teal `#0F766E`
-- Secondary: Active Emerald `#10B981`
-- Accent: Urgent Coral `#F97316`
+- **Languages**: EN (Outfit) / FA-DR / PS (Vazirmatn) with RTL support
 
 ## Implementation Status
 
-### ✅ Phase 1 (Feb 2026) — Authentication & Multilingual UI
-- JWT + Google OAuth, /auth/me, logout
-- 3-language UI with RTL, dark mode
-- Role selector login/register
-- LLM translation endpoint (Gemini 3.1 Pro)
-- **20/20 tests passing**
+### ✅ Phase 1 — Auth & Multilingual UI (20/20 tests)
+### ✅ Phase 2 — Database Architecture (32/32 + 20 regression)
+### ✅ Phase 3 — Core Features (47/47 + 52 regression)
+### ✅ Phase 4 (Feb 2026) — Object Storage + Schedule + Orders + Notifications + Commission
+- **Emergent Object Storage**: Profile picture & prescription uploads (5MB, image/PDF MIME)
+- **Doctor Weekly Schedule**: day_of_week + start/end time + slot duration template
+- **Medicine Orders**: full purchase flow with stock decrement, prescription validation, auto-notifications
+- **Commission Tracking**: 4% on medicine sales, 12% on doctor consultations (GMV dashboard)
+- **HTTP Polling Notifications**: bell icon + unread count + auto-generated on order/appointment events
+- **Profile Picture**: Avatar with upload UI in dashboard
+- **Doctor Appointment Completion**: Doctor-only status='completed' (powers consultation GMV)
+- **Prescription File Access Control**: Owner + linked pharmacy can view (PHI privacy)
+- **48/48 Phase 4 + 147/147 combined regression = 100%**
 
-### ✅ Phase 2 (Feb 2026) — Database Architecture
-- Role-specific profile models (Doctor/Patient/Pharmacy/Engineer)
-- GeoJSON location + 2dsphere nearby search
-- Reviews with role rules + tag aggregation
-- **32/32 Phase 2 + 20/20 regression = 52/52 passing**
+## MongoDB Collections (10 total)
+| Collection | Purpose |
+|------------|---------|
+| `users` | Accounts + role-specific profile_data + is_verified/is_featured |
+| `user_sessions` | Google OAuth sessions |
+| `locations` | GeoJSON GPS |
+| `reviews` | Ratings + tags |
+| `appointments` | Bookings (now with 'completed' status) |
+| `medicines` | Pharmacy catalog |
+| `chat_sessions` | AI chat history |
+| `subscriptions` | Premium memberships |
+| `video_rooms` | WebRTC signaling |
+| `files` | Object Storage references |
+| `schedules` | Doctor weekly templates |
+| `orders` | Medicine orders + commission |
+| `notifications` | Polling-based notifications |
 
-### ✅ Phase 3 (Feb 2026) — Core Features
-- **Appointments**: Patient books Doctor (calendar + time slots + video/in-person types)
-- **Medicines**: Pharmacy CRUD catalog + public search (name/category/pharmacy)
-- **AI Chat**: Gemini 3.1 Pro symptom checker + device fault helper (persistent sessions)
-- **Subscriptions**: Mock payment ($9.99/mo, $99.99/yr) → verified + featured badges
-- **Video Rooms**: WebRTC signaling via HTTP polling, SimplePeer for P2P
-- **Pharmacy Map**: Leaflet/OpenStreetMap with 24/7 color filter
-- Tab-based Dashboard with role-aware visibility
-- All UI in 3 languages
-- **47/47 Phase 3 + 99/99 combined regression = 99/99 passing**
-- Fixed: `/auth/me` now exposes `is_verified`, `is_featured`, `featured_until`
+## API Endpoints (Phase 4 additions)
+- **Files**: POST `/upload`, GET `/files/{id}` (Bearer or `?auth=token`), DELETE `/files/{id}`
+- **Schedule**: PUT `/schedule`, GET `/schedule/me`, GET `/schedule/{doctor_id}`
+- **Orders**: POST `/orders`, GET `/orders/me`, PUT `/orders/{id}`
+- **Notifications**: GET `/notifications` (poll), PUT `/notifications/{id}/read`, PUT `/notifications/read-all`
+- **Commission**: GET `/commission/summary` (role-aware GMV)
+- **Appointments**: PUT `/appointments/{id}` with `status='completed'` (doctor-only)
 
-## MongoDB Collections
-| Collection | Purpose | Key Fields |
-|------------|---------|------------|
-| `users` | Accounts | user_id, user_type, profile_data, is_verified, is_featured |
-| `user_sessions` | Google OAuth | user_id, session_token, expires_at |
-| `locations` | GPS | user_id, location (GeoJSON), address |
-| `reviews` | Ratings | review_id, reviewer_id, reviewee_id, rating, tags |
-| `appointments` | Bookings | appointment_id, doctor_id, patient_id, scheduled_at, status, video_room_id |
-| `medicines` | Pharmacy catalog | medicine_id, pharmacy_id, name, price, stock |
-| `chat_sessions` | AI chats | session_id, user_id, chat_type, messages[] |
-| `subscriptions` | Premium | subscription_id, user_id, plan, expires_at |
-| `video_rooms` | WebRTC | room_id, host_id, participants[], signals[] |
-
-## API Endpoints
-| Domain | Endpoints |
-|--------|-----------|
-| Auth | register, login, google/session, me, logout |
-| Profile | GET/PUT /profile, GET /profile/{id} |
-| Location | POST /location, GET /location/me, GET /nearby |
-| Reviews | POST /reviews, GET /reviews/user/{id}, GET /reviews/me, DELETE |
-| Appointments | POST, GET /me, PUT, GET /doctor/{id}/booked-slots |
-| Medicines | POST, GET (search), PUT, DELETE |
-| AI Chat | POST /start, POST /{id}/message, GET /me, GET /{id} |
-| Subscriptions | GET /plans, POST /subscribe, GET /me, POST /cancel |
-| Video | POST /rooms, /join, /signal, GET /signals, POST /close |
-| Public | GET /pharmacies/all, POST /translate |
+## Commission/GMV Model (Investor Deck)
+- **Medicine sales**: 4% platform commission
+- **Doctor video consultations**: 12% platform commission ($30/consultation default)
+- **GMV Dashboard**: real-time per-user view of total sales, payout, and commission
 
 ## Test Credentials (`/app/memory/test_credentials.md`)
 - doctor@test.com / Doctor123!
@@ -73,32 +60,34 @@
 - pharmacy@test.com / Pharmacy123!
 - engineer@test.com / Engineer123!
 
-## Prioritized Backlog (Next Tasks)
+## Prioritized Backlog
 
-### P0 (High Priority)
-- [ ] Real-time notifications (FCM/WebSocket) for appointment status changes
-- [ ] Prescription upload (object storage) → linked to medicine purchase
-- [ ] Doctor's available-slots system (weekly schedule template)
-- [ ] User profile picture upload
+### P0 (Next Sprint)
+- [ ] Atomic stock decrement (race condition prevention)
+- [ ] Real Stripe payment to replace mock subscription
+- [ ] Doctor consultation_fee field on profile (replace $30 hardcode)
+- [ ] Restore stock when orders cancelled
+- [ ] Order status state-machine validation
 
-### P1 (Medium)
-- [ ] Migrate from HTTP polling to WebSocket for video signaling
-- [ ] Real Stripe payment integration to replace mock
-- [ ] Search/filter by language preference (find Pashto-speaking doctors)
-- [ ] Order/cart system for medicine purchase
-- [ ] Cron job to expire `is_featured` at `featured_until`
+### P1
+- [ ] Migrate video signaling from HTTP polling to WebSocket
+- [ ] Admin platform-wide GMV dashboard
+- [ ] Doctor profile search by language preference
+- [ ] FCM push notifications (browser/mobile)
+- [ ] File upload: magic-byte content sniffing + streaming size limit
+- [ ] Commission rates in `platform_config` collection (not hardcoded)
 
-### P2 (Polish & Tech Debt)
-- [ ] Split server.py (1200+ lines) into routers/ submodules
-- [ ] Double-booking prevention in POST /appointments
-- [ ] Validate scheduled_at as ISO + future date
-- [ ] Bound video signals array (TTL or cleanup)
-- [ ] Pagination across list endpoints
-- [ ] $lookup aggregation in /pharmacies/all (replace N+1)
-- [ ] Map signals' target_user_id to room participants
+### P2 (Tech Debt)
+- [ ] Split server.py (1700+ lines) into routers/ submodules
+- [ ] Pagination across all list endpoints
+- [ ] TTL index on notifications (90-day cleanup)
+- [ ] Cron to expire `is_featured` at `featured_until`
+- [ ] $lookup aggregation in /pharmacies/all
+- [ ] CORS_ORIGINS hardening (no '*' with credentials)
 
-## Known Minor Issues (Non-blocking - documented in iteration_3.json)
-- Past dates accepted in appointment booking
-- Mock card number accepts non-numeric strings
-- Video signals never garbage-collected (memory grows during call)
-- No badge expiry cron — pharmacy keeps badge until manual cancel
+## Known Minor Issues (Non-blocking)
+- Stock decrement not atomic (race condition possible)
+- Notification array grows unboundedly (need TTL)
+- File size checked AFTER full read (DoS surface)
+- Order status transitions not state-machine validated
+- Cancelled orders don't restore stock
