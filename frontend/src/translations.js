@@ -59,6 +59,19 @@ export const translations = {
     // Status
     paymentSuccess: 'Payment successful!', appointmentBooked: 'Appointment booked!',
     medicineAdded: 'Medicine added!', error: 'An error occurred',
+
+    // Phase 4
+    notifications: 'Notifications', markAllRead: 'Mark all as read', noNotifications: 'No notifications',
+    schedule: 'Schedule', mySchedule: 'My Schedule', weeklyTemplate: 'Weekly Template',
+    addSlot: 'Add Slot', removeSlot: 'Remove', startTime: 'Start Time', endTime: 'End Time',
+    sunday: 'Sunday', monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday',
+    thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday',
+    orders: 'Orders', myOrders: 'My Orders', placeOrder: 'Place Order', orderNow: 'Order',
+    quantity: 'Quantity', uploadPrescription: 'Upload Prescription', prescriptionRequired: 'Prescription Required',
+    deliveryAddress: 'Delivery Address', orderStatus: 'Status', shipped: 'Shipped', delivered: 'Delivered',
+    commission: 'Commission', gmvDashboard: 'Revenue Dashboard', totalGmv: 'Total Sales (GMV)',
+    commissionTotal: 'Platform Commission', payoutTotal: 'Your Payout',
+    uploadProfilePicture: 'Upload Profile Picture', uploadingFile: 'Uploading...', uploadSuccess: 'Uploaded!',
   },
 
   fa: {
@@ -112,6 +125,18 @@ export const translations = {
 
     paymentSuccess: 'پرداخت موفق!', appointmentBooked: 'نوبت رزرو شد!',
     medicineAdded: 'دارو اضافه شد!', error: 'خطایی رخ داد',
+
+    notifications: 'اعلان‌ها', markAllRead: 'علامت‌گذاری همه به عنوان خوانده شده', noNotifications: 'اعلانی وجود ندارد',
+    schedule: 'برنامه', mySchedule: 'برنامه من', weeklyTemplate: 'الگوی هفتگی',
+    addSlot: 'افزودن بازه', removeSlot: 'حذف', startTime: 'زمان شروع', endTime: 'زمان پایان',
+    sunday: 'یکشنبه', monday: 'دوشنبه', tuesday: 'سه‌شنبه', wednesday: 'چهارشنبه',
+    thursday: 'پنج‌شنبه', friday: 'جمعه', saturday: 'شنبه',
+    orders: 'سفارش‌ها', myOrders: 'سفارش‌های من', placeOrder: 'ثبت سفارش', orderNow: 'سفارش',
+    quantity: 'تعداد', uploadPrescription: 'بارگذاری نسخه', prescriptionRequired: 'نیاز به نسخه',
+    deliveryAddress: 'آدرس تحویل', orderStatus: 'وضعیت', shipped: 'ارسال شد', delivered: 'تحویل داده شد',
+    commission: 'کمیسیون', gmvDashboard: 'داشبورد درآمد', totalGmv: 'مجموع فروش',
+    commissionTotal: 'کمیسیون پلتفرم', payoutTotal: 'سهم شما',
+    uploadProfilePicture: 'بارگذاری عکس پروفایل', uploadingFile: 'در حال بارگذاری...', uploadSuccess: 'بارگذاری شد!',
   },
 
   ps: {

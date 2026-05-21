@@ -7,7 +7,8 @@ import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { Switch } from './ui/switch';
 import { Badge } from './ui/badge';
-import { Search, Plus, Pill, Trash2 } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
+import { Search, Plus, Pill, Trash2, ShoppingCart, Upload } from 'lucide-react';
 import api from '../api';
 import { toast } from 'sonner';
 
@@ -20,8 +21,13 @@ const MedicinesTab = ({ user }) => {
     name: '', generic_name: '', category: '', manufacturer: '',
     price: '', stock: '', description: '', requires_prescription: false,
   });
+  const [orderDialog, setOrderDialog] = useState(null);
+  const [orderQty, setOrderQty] = useState(1);
+  const [orderAddress, setOrderAddress] = useState('');
+  const [prescriptionFile, setPrescriptionFile] = useState(null);
 
   const isPharmacy = user?.user_type === 'Pharmacy';
+  const isPatient = user?.user_type === 'Patient';
 
   const loadMedicines = async () => {
     try {
@@ -66,6 +72,40 @@ const MedicinesTab = ({ user }) => {
       loadMedicines();
     } catch (e) {
       toast.error(t('error'));
+    }
+  };
+
+  const uploadPrescription = async (file) => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await api.post('/upload?purpose=prescription', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setPrescriptionFile(res.data);
+      toast.success(t('uploadSuccess'));
+    } catch (e) {
+      toast.error(t('error'));
+    }
+  };
+
+  const placeOrder = async () => {
+    if (!orderDialog) return;
+    try {
+      await api.post('/orders', {
+        medicine_id: orderDialog.medicine_id,
+        quantity: orderQty,
+        delivery_address: orderAddress,
+        prescription_file_id: prescriptionFile?.file_id,
+      });
+      toast.success('Order placed!');
+      setOrderDialog(null);
+      setOrderQty(1);
+      setOrderAddress('');
+      setPrescriptionFile(null);
+      loadMedicines();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || t('error'));
     }
   };
 
@@ -153,11 +193,18 @@ const MedicinesTab = ({ user }) => {
                       {med.requires_prescription && <Badge variant="outline">Rx</Badge>}
                     </div>
                     {med.category && <Badge variant="secondary">{med.category}</Badge>}
-                    {isPharmacy && med.pharmacy_id === user.user_id && (
-                      <Button size="sm" variant="ghost" onClick={() => handleDelete(med.medicine_id)} data-testid={`delete-${med.medicine_id}`}>
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    )}
+                    <div className="flex gap-2 pt-2">
+                      {isPatient && med.stock > 0 && (
+                        <Button size="sm" onClick={() => setOrderDialog(med)} data-testid={`order-${med.medicine_id}`}>
+                          <ShoppingCart className="w-4 h-4 me-1" /> {t('orderNow')}
+                        </Button>
+                      )}
+                      {isPharmacy && med.pharmacy_id === user.user_id && (
+                        <Button size="sm" variant="ghost" onClick={() => handleDelete(med.medicine_id)} data-testid={`delete-${med.medicine_id}`}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </div>
                   </CardContent>
                 </Card>
               ))}
@@ -165,6 +212,44 @@ const MedicinesTab = ({ user }) => {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={!!orderDialog} onOpenChange={(o) => !o && setOrderDialog(null)}>
+        <DialogContent data-testid="order-dialog">
+          <DialogHeader><DialogTitle>{t('placeOrder')}: {orderDialog?.name}</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>{t('quantity')}</Label>
+              <Input type="number" min="1" max={orderDialog?.stock} value={orderQty} onChange={(e) => setOrderQty(parseInt(e.target.value) || 1)} data-testid="order-quantity-input" />
+              <p className="text-xs text-muted-foreground mt-1">Total: ${((orderDialog?.price || 0) * orderQty).toFixed(2)}</p>
+            </div>
+            <div>
+              <Label>{t('deliveryAddress')}</Label>
+              <Textarea value={orderAddress} onChange={(e) => setOrderAddress(e.target.value)} data-testid="order-address-input" />
+            </div>
+            {orderDialog?.requires_prescription && (
+              <div>
+                <Label>{t('uploadPrescription')} *</Label>
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  onChange={(e) => e.target.files?.[0] && uploadPrescription(e.target.files[0])}
+                  className="text-sm"
+                  data-testid="prescription-upload"
+                />
+                {prescriptionFile && <Badge className="mt-2"><Upload className="w-3 h-3 me-1" /> {prescriptionFile.file_id}</Badge>}
+              </div>
+            )}
+            <Button
+              onClick={placeOrder}
+              disabled={orderDialog?.requires_prescription && !prescriptionFile}
+              className="w-full"
+              data-testid="confirm-order-btn"
+            >
+              {t('placeOrder')}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

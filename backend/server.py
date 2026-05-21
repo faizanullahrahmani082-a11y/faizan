@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, status, UploadFile, File, Query, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -13,6 +13,7 @@ from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 import httpx
+import requests
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
@@ -29,6 +30,58 @@ security = HTTPBearer(auto_error=False)
 JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 7
+
+# Object Storage
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = "afghan-health"
+storage_key = None  # Module-level
+
+# Commission rates
+COMMISSION_RATES = {
+    "medicine_sale": 0.04,  # 4% on pharmacy drug sales
+    "consultation": 0.12,    # 12% on online doctor consultations
+}
+
+
+def init_storage():
+    """Call once at startup. Returns session-scoped reusable storage_key."""
+    global storage_key
+    if storage_key:
+        return storage_key
+    try:
+        resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+        resp.raise_for_status()
+        storage_key = resp.json()["storage_key"]
+        return storage_key
+    except Exception as e:
+        logging.error(f"Storage init failed: {e}")
+        return None
+
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=503, detail="Storage unavailable")
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_object(path: str):
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=503, detail="Storage unavailable")
+    resp = requests.get(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key}, timeout=60
+    )
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -1180,6 +1233,398 @@ async def list_pharmacies(only_24_7: bool = False, only_featured: bool = False):
     return {"count": len(results), "pharmacies": results}
 
 
+# ============= PHASE 4 MODELS =============
+class FileUploadResponse(BaseModel):
+    file_id: str
+    storage_path: str
+    url: str
+    size: int
+
+
+class ScheduleSlot(BaseModel):
+    day_of_week: int  # 0=Sunday, 1=Monday ... 6=Saturday
+    start_time: str  # "09:00"
+    end_time: str  # "17:00"
+    slot_duration_minutes: int = 30
+
+
+class ScheduleUpdate(BaseModel):
+    slots: List[ScheduleSlot]
+
+
+class OrderCreate(BaseModel):
+    medicine_id: str
+    quantity: int = 1
+    prescription_file_id: Optional[str] = None  # if prescription required
+    delivery_address: Optional[str] = None
+
+
+class OrderUpdate(BaseModel):
+    status: Optional[str] = None  # pending | confirmed | shipped | delivered | cancelled
+
+
+# ============= FILE UPLOAD =============
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf"}
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+
+
+@api_router.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    purpose: str = Query("general"),  # profile_picture | prescription | general
+    current_user: User = Depends(get_current_user)
+):
+    """Upload a file to Emergent Object Storage. Returns file_id and URL."""
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
+    
+    data = await file.read()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 5MB)")
+    
+    ext = (file.filename or "bin").split(".")[-1].lower()
+    file_id = f"file_{uuid.uuid4().hex[:12]}"
+    path = f"{APP_NAME}/uploads/{current_user.user_id}/{file_id}.{ext}"
+    
+    try:
+        result = put_object(path, data, file.content_type)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Storage upload failed: {str(e)}")
+    
+    file_doc = {
+        "file_id": file_id,
+        "storage_path": result["path"],
+        "owner_id": current_user.user_id,
+        "original_filename": file.filename,
+        "content_type": file.content_type,
+        "size": result.get("size", len(data)),
+        "purpose": purpose,
+        "is_deleted": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.files.insert_one(file_doc)
+    
+    # If profile picture, update user
+    if purpose == "profile_picture":
+        await db.users.update_one(
+            {"user_id": current_user.user_id},
+            {"$set": {"picture": f"/api/files/{file_id}"}}
+        )
+    
+    return {
+        "file_id": file_id,
+        "storage_path": result["path"],
+        "url": f"/api/files/{file_id}",
+        "size": file_doc["size"]
+    }
+
+
+@api_router.get("/files/{file_id}")
+async def download_file(
+    file_id: str,
+    authorization: Optional[str] = Header(None),
+    auth: Optional[str] = Query(None)
+):
+    """Serve a file from object storage. Supports ?auth=token query param for <img> tags."""
+    # Auth via header or query param
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+    elif auth:
+        token = auth
+    
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    # Verify token (any valid token works for now - profile pics are semi-public among users)
+    try:
+        if token.startswith('test_session_') or len(token) > 200:
+            session_doc = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+            if not session_doc:
+                raise HTTPException(status_code=401, detail="Invalid session")
+        else:
+            jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except (JWTError, Exception):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    record = await db.files.find_one({"file_id": file_id, "is_deleted": False}, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        data, content_type = get_object(record["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Storage retrieval failed: {str(e)}")
+    
+    return Response(content=data, media_type=record.get("content_type", content_type))
+
+
+@api_router.delete("/files/{file_id}")
+async def delete_file(file_id: str, current_user: User = Depends(get_current_user)):
+    """Soft-delete a file (only owner can delete)"""
+    record = await db.files.find_one({"file_id": file_id, "is_deleted": False}, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    if record["owner_id"] != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Not your file")
+    
+    await db.files.update_one({"file_id": file_id}, {"$set": {"is_deleted": True}})
+    return {"message": "File deleted"}
+
+
+# ============= DOCTOR SCHEDULE =============
+@api_router.put("/schedule")
+async def set_schedule(req: ScheduleUpdate, current_user: User = Depends(get_current_user)):
+    """Doctor sets their weekly availability template"""
+    if current_user.user_type != "Doctor":
+        raise HTTPException(status_code=403, detail="Only doctors have schedules")
+    
+    schedule_doc = {
+        "doctor_id": current_user.user_id,
+        "slots": [s.model_dump() for s in req.slots],
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.schedules.update_one(
+        {"doctor_id": current_user.user_id},
+        {"$set": schedule_doc},
+        upsert=True
+    )
+    schedule_doc.pop("_id", None)
+    return schedule_doc
+
+
+@api_router.get("/schedule/me")
+async def get_my_schedule(current_user: User = Depends(get_current_user)):
+    """Get current doctor's schedule"""
+    schedule = await db.schedules.find_one({"doctor_id": current_user.user_id}, {"_id": 0})
+    return schedule or {"doctor_id": current_user.user_id, "slots": []}
+
+
+@api_router.get("/schedule/{doctor_id}")
+async def get_doctor_schedule(doctor_id: str):
+    """Get a doctor's weekly schedule template (public)"""
+    schedule = await db.schedules.find_one({"doctor_id": doctor_id}, {"_id": 0})
+    return schedule or {"doctor_id": doctor_id, "slots": []}
+
+
+# ============= ORDERS (Medicine Purchase + Commission) =============
+@api_router.post("/orders")
+async def create_order(order: OrderCreate, current_user: User = Depends(get_current_user)):
+    """Patient creates an order for a medicine. Commission auto-calculated."""
+    if current_user.user_type != "Patient":
+        raise HTTPException(status_code=403, detail="Only patients can place orders")
+    
+    medicine = await db.medicines.find_one({"medicine_id": order.medicine_id}, {"_id": 0})
+    if not medicine:
+        raise HTTPException(status_code=404, detail="Medicine not found")
+    
+    if medicine["stock"] < order.quantity:
+        raise HTTPException(status_code=400, detail="Insufficient stock")
+    
+    if medicine.get("requires_prescription") and not order.prescription_file_id:
+        raise HTTPException(status_code=400, detail="This medicine requires a prescription")
+    
+    # Validate prescription file if provided
+    if order.prescription_file_id:
+        rx = await db.files.find_one(
+            {"file_id": order.prescription_file_id, "owner_id": current_user.user_id, "is_deleted": False},
+            {"_id": 0}
+        )
+        if not rx:
+            raise HTTPException(status_code=400, detail="Invalid prescription file")
+    
+    subtotal = medicine["price"] * order.quantity
+    commission_rate = COMMISSION_RATES["medicine_sale"]
+    commission = round(subtotal * commission_rate, 2)
+    pharmacy_payout = round(subtotal - commission, 2)
+    
+    order_id = f"ord_{uuid.uuid4().hex[:12]}"
+    order_doc = {
+        "order_id": order_id,
+        "patient_id": current_user.user_id,
+        "patient_name": current_user.name,
+        "pharmacy_id": medicine["pharmacy_id"],
+        "pharmacy_name": medicine["pharmacy_name"],
+        "medicine_id": order.medicine_id,
+        "medicine_name": medicine["name"],
+        "quantity": order.quantity,
+        "unit_price": medicine["price"],
+        "subtotal": subtotal,
+        "commission_rate": commission_rate,
+        "commission_amount": commission,
+        "pharmacy_payout": pharmacy_payout,
+        "prescription_file_id": order.prescription_file_id,
+        "delivery_address": order.delivery_address,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.orders.insert_one(order_doc)
+    
+    # Decrease stock
+    await db.medicines.update_one(
+        {"medicine_id": order.medicine_id},
+        {"$inc": {"stock": -order.quantity}}
+    )
+    
+    # Create notification for pharmacy
+    await db.notifications.insert_one({
+        "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+        "user_id": medicine["pharmacy_id"],
+        "type": "new_order",
+        "title": "New Medicine Order",
+        "message": f"{current_user.name} ordered {order.quantity}x {medicine['name']}",
+        "data": {"order_id": order_id},
+        "is_read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    order_doc.pop("_id", None)
+    return order_doc
+
+
+@api_router.get("/orders/me")
+async def list_my_orders(current_user: User = Depends(get_current_user)):
+    """List orders for current user (as patient OR pharmacy)"""
+    query = {"$or": [
+        {"patient_id": current_user.user_id},
+        {"pharmacy_id": current_user.user_id}
+    ]}
+    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return {"count": len(orders), "orders": orders}
+
+
+@api_router.put("/orders/{order_id}")
+async def update_order(
+    order_id: str,
+    update: OrderUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    """Update order status. Pharmacy can confirm/ship/deliver. Patient can cancel pending."""
+    order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if current_user.user_id not in [order["patient_id"], order["pharmacy_id"]]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    if update.status:
+        # Patient can only cancel
+        if current_user.user_id == order["patient_id"] and update.status != "cancelled":
+            raise HTTPException(status_code=403, detail="Patient can only cancel")
+        
+        await db.orders.update_one({"order_id": order_id}, {"$set": {"status": update.status}})
+        
+        # Notify the other party
+        other_id = order["pharmacy_id"] if current_user.user_id == order["patient_id"] else order["patient_id"]
+        await db.notifications.insert_one({
+            "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+            "user_id": other_id,
+            "type": "order_update",
+            "title": "Order Status Updated",
+            "message": f"Order {order_id} is now {update.status}",
+            "data": {"order_id": order_id, "status": update.status},
+            "is_read": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+    
+    order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
+    return order
+
+
+# ============= NOTIFICATIONS (HTTP Polling) =============
+@api_router.get("/notifications")
+async def get_notifications(
+    only_unread: bool = False,
+    since: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Poll notifications for current user"""
+    query = {"user_id": current_user.user_id}
+    if only_unread:
+        query["is_read"] = False
+    if since:
+        query["created_at"] = {"$gt": since}
+    
+    notifications = await db.notifications.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    unread_count = await db.notifications.count_documents({
+        "user_id": current_user.user_id,
+        "is_read": False
+    })
+    return {"count": len(notifications), "unread_count": unread_count, "notifications": notifications}
+
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_read(notification_id: str, current_user: User = Depends(get_current_user)):
+    """Mark a notification as read"""
+    result = await db.notifications.update_one(
+        {"notification_id": notification_id, "user_id": current_user.user_id},
+        {"$set": {"is_read": True}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"message": "Marked as read"}
+
+
+@api_router.put("/notifications/read-all")
+async def mark_all_read(current_user: User = Depends(get_current_user)):
+    """Mark all notifications as read"""
+    result = await db.notifications.update_many(
+        {"user_id": current_user.user_id, "is_read": False},
+        {"$set": {"is_read": True}}
+    )
+    return {"marked_count": result.modified_count}
+
+
+# ============= COMMISSION / GMV TRACKING =============
+@api_router.get("/commission/summary")
+async def commission_summary(current_user: User = Depends(get_current_user)):
+    """GMV and commission summary for current user (pharmacy: sales, doctor: consultations)"""
+    if current_user.user_type not in ["Pharmacy", "Doctor", "Biomedical Engineer"]:
+        raise HTTPException(status_code=403, detail="Not applicable for this role")
+    
+    # Pharmacy: aggregate orders
+    if current_user.user_type == "Pharmacy":
+        pipeline = [
+            {"$match": {"pharmacy_id": current_user.user_id, "status": {"$ne": "cancelled"}}},
+            {"$group": {
+                "_id": None,
+                "gmv": {"$sum": "$subtotal"},
+                "commission_total": {"$sum": "$commission_amount"},
+                "payout_total": {"$sum": "$pharmacy_payout"},
+                "order_count": {"$sum": 1}
+            }}
+        ]
+        result = await db.orders.aggregate(pipeline).to_list(1)
+        data = result[0] if result else {"gmv": 0, "commission_total": 0, "payout_total": 0, "order_count": 0}
+        data.pop("_id", None)
+        return {"role": "Pharmacy", "commission_rate": COMMISSION_RATES["medicine_sale"], **data}
+    
+    # Doctor: aggregate completed video appointments (commission applies)
+    if current_user.user_type == "Doctor":
+        # Each completed video appointment = consultation fee (default $30 - in real app, doctor sets)
+        completed = await db.appointments.count_documents({
+            "doctor_id": current_user.user_id,
+            "status": "completed",
+            "appointment_type": "video"
+        })
+        consultation_fee = 30  # Default; doctor can set in their profile
+        gmv = completed * consultation_fee
+        commission_rate = COMMISSION_RATES["consultation"]
+        commission = round(gmv * commission_rate, 2)
+        payout = round(gmv - commission, 2)
+        return {
+            "role": "Doctor",
+            "commission_rate": commission_rate,
+            "consultation_fee": consultation_fee,
+            "gmv": gmv,
+            "commission_total": commission,
+            "payout_total": payout,
+            "completed_consultations": completed
+        }
+    
+    return {"role": current_user.user_type, "gmv": 0, "commission_total": 0}
+
+
 # ============= BASIC ROUTES =============
 @api_router.get("/")
 async def root():
@@ -1203,6 +1648,20 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def startup_event():
+    try:
+        init_storage()
+        logger.info("Object storage initialized successfully")
+    except Exception as e:
+        logger.error(f"Storage init failed at startup: {e}")
+    # Pre-create geospatial index
+    try:
+        await db.locations.create_index([("location", "2dsphere")])
+    except Exception:
+        pass
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

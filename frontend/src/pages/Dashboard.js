@@ -12,7 +12,11 @@ import MedicinesTab from '../components/MedicinesTab';
 import AIChatTab from '../components/AIChatTab';
 import MapTab from '../components/MapTab';
 import SubscriptionTab from '../components/SubscriptionTab';
-import { Calendar, Pill, Bot, MapPin, Crown, LayoutDashboard, BadgeCheck, Star } from 'lucide-react';
+import ScheduleTab from '../components/ScheduleTab';
+import OrdersTab from '../components/OrdersTab';
+import NotificationBell from '../components/NotificationBell';
+import ProfilePictureUpload from '../components/ProfilePictureUpload';
+import { Calendar, Pill, Bot, MapPin, Crown, LayoutDashboard, BadgeCheck, Star, CalendarDays, ShoppingCart } from 'lucide-react';
 import api from '../api';
 import { toast } from 'sonner';
 
@@ -73,9 +77,17 @@ const Dashboard = () => {
 
   // Determine which tabs to show based on role
   const showAppointments = ['Patient', 'Doctor'].includes(userType);
-  const showMedicines = true; // Everyone can search; Pharmacy can add
+  const showMedicines = true;
   const showMap = true;
-  const showAI = true; // Everyone has access to AI assistant
+  const showAI = true;
+  const showSchedule = userType === 'Doctor';
+  const showOrders = ['Patient', 'Pharmacy'].includes(userType);
+
+  const handleProfilePictureUpdate = (newUrl) => {
+    setUser({ ...user, picture: newUrl });
+    const stored = JSON.parse(localStorage.getItem('user') || '{}');
+    localStorage.setItem('user', JSON.stringify({ ...stored, picture: newUrl }));
+  };
 
   return (
     <div className="min-h-screen bg-background" data-testid="dashboard-page">
@@ -88,6 +100,7 @@ const Dashboard = () => {
             <span className="text-xl font-semibold hidden sm:inline">{t('healthPortal')}</span>
           </div>
           <div className="flex items-center gap-2">
+            <NotificationBell />
             <LanguageSwitcher />
             <ThemeToggle />
             <Button variant="outline" onClick={handleLogout} data-testid="logout-btn">
@@ -98,17 +111,20 @@ const Dashboard = () => {
       </header>
 
       <main className="container mx-auto px-4 py-6">
-        <div className="mb-6">
-          <div className="flex items-center gap-3 mb-1">
-            <h1 className="text-3xl font-semibold tracking-tight text-start">
-              {t('welcome')}, {user?.name}
-            </h1>
-            {user?.is_verified && <Badge className="bg-primary"><BadgeCheck className="w-3 h-3 me-1" />{t('verified')}</Badge>}
-            {user?.is_featured && <Badge className="bg-yellow-500 text-white"><Star className="w-3 h-3 me-1" />{t('featured')}</Badge>}
+        <div className="mb-6 flex items-start gap-4 flex-wrap">
+          <ProfilePictureUpload user={user} onUpdate={handleProfilePictureUpdate} />
+          <div>
+            <div className="flex items-center gap-3 mb-1">
+              <h1 className="text-3xl font-semibold tracking-tight text-start">
+                {t('welcome')}, {user?.name}
+              </h1>
+              {user?.is_verified && <Badge className="bg-primary"><BadgeCheck className="w-3 h-3 me-1" />{t('verified')}</Badge>}
+              {user?.is_featured && <Badge className="bg-yellow-500 text-white"><Star className="w-3 h-3 me-1" />{t('featured')}</Badge>}
+            </div>
+            <p className="text-muted-foreground text-start">
+              {t('userType')}: <span className="font-medium text-foreground">{user?.user_type}</span>
+            </p>
           </div>
-          <p className="text-muted-foreground text-start">
-            {t('userType')}: <span className="font-medium text-foreground">{user?.user_type}</span>
-          </p>
         </div>
 
         <Tabs defaultValue="overview" className="space-y-6">
@@ -121,9 +137,19 @@ const Dashboard = () => {
                 <Calendar className="w-4 h-4 me-1" /> {t('appointments')}
               </TabsTrigger>
             )}
+            {showSchedule && (
+              <TabsTrigger value="schedule" data-testid="tab-schedule">
+                <CalendarDays className="w-4 h-4 me-1" /> {t('schedule')}
+              </TabsTrigger>
+            )}
             {showMedicines && (
               <TabsTrigger value="medicines" data-testid="tab-medicines">
                 <Pill className="w-4 h-4 me-1" /> {t('medicines')}
+              </TabsTrigger>
+            )}
+            {showOrders && (
+              <TabsTrigger value="orders" data-testid="tab-orders">
+                <ShoppingCart className="w-4 h-4 me-1" /> {t('orders')}
               </TabsTrigger>
             )}
             {showAI && (
@@ -198,8 +224,14 @@ const Dashboard = () => {
           {showAppointments && (
             <TabsContent value="appointments"><AppointmentsTab user={user} /></TabsContent>
           )}
+          {showSchedule && (
+            <TabsContent value="schedule"><ScheduleTab /></TabsContent>
+          )}
           {showMedicines && (
             <TabsContent value="medicines"><MedicinesTab user={user} /></TabsContent>
+          )}
+          {showOrders && (
+            <TabsContent value="orders"><OrdersTab user={user} /></TabsContent>
           )}
           {showAI && (
             <TabsContent value="ai"><AIChatTab user={user} /></TabsContent>
