@@ -401,13 +401,18 @@ async def update_profile(update: ProfileUpdate, current_user: User = Depends(get
 
 @api_router.get("/profile/{user_id}")
 async def get_user_profile(user_id: str, current_user: User = Depends(get_current_user)):
-    """Get another user's public profile (no email/phone for privacy)"""
+    """Get another user's public profile (no email/phone, PHI redacted for patients)"""
     user_doc = await db.users.find_one(
         {"user_id": user_id},
-        {"_id": 0, "password": 0, "email": 0}
+        {"_id": 0, "password": 0, "email": 0, "phone": 0}
     )
     if not user_doc:
         raise HTTPException(status_code=404, detail="User not found")
+    
+    # Redact Patient PHI (only the patient themselves can see their own medical data)
+    if user_doc.get("user_type") == "Patient" and user_id != current_user.user_id:
+        user_doc["profile_data"] = {}
+    
     return user_doc
 
 
