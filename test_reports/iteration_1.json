@@ -1,0 +1,45 @@
+{
+  "summary": "Tested Health Portal backend auth/translation APIs and frontend login/dashboard/i18n flows. After fixing a critical ObjectId serialization bug in /api/auth/register and /api/auth/google/session, all 20 backend tests pass. Frontend login, language switcher (English/Farsi with RTL dir='rtl'), and protected dashboard route all work correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Dashboard", "issue": "Label shows raw i18n key 'userType:' instead of translated 'User Type:' under the welcome heading (the second Profile field 'User Type' renders correctly, but the inline label near welcome message is untranslated)", "selector": "[data-testid='dashboard-page']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Login (desktop)", "issues": ["Right half is occupied by a large abstract image while the left form is centered with lots of empty whitespace above; acceptable but could be tightened on smaller laptop screens"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_and_translate.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix i18n: the inline 'userType:' label on Dashboard is not running through the translation function (likely missing t() call or wrong key). Translated 'User Type' under Profile Information works fine — just the top inline label needs the same treatment in all 3 locales.",
+    "Consider adding a user_type selector / completion step after Google OAuth signup since it currently defaults to 'Patient' silently (server.py line 231)."
+  ],
+  "critical_code_review_comments": [
+    "FIXED by tester: /api/auth/register and /api/auth/google/session were returning the post-insert user_doc which Motor mutates to include MongoDB ObjectId('_id'), causing 500 errors during FastAPI response serialization. Added user_doc.pop('_id', None) before return in both endpoints.",
+    "get_current_user uses heuristic token.startswith('test_session_') or len(token) > 200 to distinguish Google session vs JWT — fragile. Prefer trying jwt.decode first and falling back to session lookup on JWTError, or use distinct cookie names.",
+    "JWT_SECRET has insecure default fallback string in code. Should fail fast if missing in production.",
+    "Google OAuth creates users with hardcoded user_type='Patient' without giving the user a chance to choose — UX gap.",
+    "No rate limiting on /auth/login or /auth/register — brute-force risk.",
+    "Cookie set with samesite='none', secure=True is correct for cross-site, but logout only clears cookie if token present in cookies; if user authed via Authorization header, server session document is never invalidated.",
+    "/api/translate has no input length validation — large texts could rack up LLM cost.",
+    "Passwords are stored alongside user document; consider a separate credentials collection or at minimum keep projection {'_id':0,'password':0} on read paths to avoid accidental leaks."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (added user_doc.pop('_id', None) in register and google_session endpoints)",
+    "/app/backend/tests/test_auth_and_translate.py (new pytest test file, 20 cases)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "95%"},
+  "test_credentials": "Used /app/memory/test_credentials.md accounts: doctor@test.com/Doctor123!, patient@test.com/Patient123!, pharmacist@test.com/Pharmacy123!, engineer@test.com/Engineer123!. All four created via /api/auth/register during test run.",
+  "seed_data_creation": "Created 4 test users (Doctor/Patient/Pharmacist/Engineer) via /api/auth/register endpoint. Persisted in MongoDB users collection.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend register/google_session ObjectId bug has been fixed. Backend test suite at /app/backend/tests/test_auth_and_translate.py covers: root, register (4 user types + dup + invalid email), login (4 success + invalid pw + nonexistent), /auth/me (bearer + no-auth + invalid token), logout, translate (auth required + LLM Gemini 3.1 Pro success in EN→FA), and google/session invalid path. Frontend testids available: login-page, login-email-input, login-password-input, login-submit-btn, google-login-btn, register-link, language-switcher, language-select-trigger, theme-toggle-btn, dashboard-page, logout-btn, view-profile-btn, settings-btn, help-btn. Register page testids not yet verified - main agent should add data-testids there too. The only outstanding frontend issue is the untranslated 'userType:' label on dashboard.",
+  "rca_of_the_issue": "Register endpoint 500 root cause: db.users.insert_one(user_doc) mutates user_doc in-place by injecting MongoDB's _id (ObjectId). The same dict was then returned in the response. FastAPI's jsonable_encoder cannot serialize bson.ObjectId, raising ValueError(\"'ObjectId' object is not iterable\"). Reproduction: POST /api/auth/register with a fresh email returns 500 (duplicate email path returns 400 before insert, so that worked). Mitigation applied: pop '_id' from user_doc before returning. Same pattern was present in /api/auth/google/session and also fixed."
+}
