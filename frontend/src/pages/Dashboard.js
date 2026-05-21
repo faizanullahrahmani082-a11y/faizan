@@ -14,9 +14,10 @@ import MapTab from '../components/MapTab';
 import SubscriptionTab from '../components/SubscriptionTab';
 import ScheduleTab from '../components/ScheduleTab';
 import OrdersTab from '../components/OrdersTab';
+import ReportsTab from '../components/ReportsTab';
 import NotificationBell from '../components/NotificationBell';
 import ProfilePictureUpload from '../components/ProfilePictureUpload';
-import { Calendar, Pill, Bot, MapPin, Crown, LayoutDashboard, BadgeCheck, Star, CalendarDays, ShoppingCart } from 'lucide-react';
+import { Calendar, Pill, Bot, MapPin, Crown, LayoutDashboard, BadgeCheck, Star, CalendarDays, ShoppingCart, FileText } from 'lucide-react';
 import api from '../api';
 import { toast } from 'sonner';
 
@@ -167,6 +168,11 @@ const Dashboard = () => {
                 <Crown className="w-4 h-4 me-1" /> {t('subscription')}
               </TabsTrigger>
             )}
+            {showReports && (
+              <TabsTrigger value="reports" data-testid="tab-reports">
+                <FileText className="w-4 h-4 me-1" /> {t('reports')}
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4">
@@ -241,6 +247,9 @@ const Dashboard = () => {
           )}
           {canSubscribe && (
             <TabsContent value="subscription"><SubscriptionTab user={user} /></TabsContent>
+          )}
+          {showReports && (
+            <TabsContent value="reports"><ReportsTab user={user} /></TabsContent>
           )}
         </Tabs>
       </main>

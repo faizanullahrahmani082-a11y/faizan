@@ -144,6 +144,7 @@ class DoctorProfile(BaseModel):
     hospital: Optional[str] = None
     years_experience: Optional[int] = None
     working_hours: Optional[str] = None  # e.g. "Mon-Fri 9:00-17:00"
+    consultation_fee: Optional[float] = 30.0  # USD per video consultation
 
 
 class PatientProfile(BaseModel):
@@ -1447,16 +1448,16 @@ async def get_doctor_schedule(doctor_id: str):
 # ============= ORDERS (Medicine Purchase + Commission) =============
 @api_router.post("/orders")
 async def create_order(order: OrderCreate, current_user: User = Depends(get_current_user)):
-    """Patient creates an order for a medicine. Commission auto-calculated."""
+    """Patient creates an order for a medicine. Commission auto-calculated. Atomic stock decrement."""
     if current_user.user_type != "Patient":
         raise HTTPException(status_code=403, detail="Only patients can place orders")
+    
+    if order.quantity < 1:
+        raise HTTPException(status_code=400, detail="Quantity must be at least 1")
     
     medicine = await db.medicines.find_one({"medicine_id": order.medicine_id}, {"_id": 0})
     if not medicine:
         raise HTTPException(status_code=404, detail="Medicine not found")
-    
-    if medicine["stock"] < order.quantity:
-        raise HTTPException(status_code=400, detail="Insufficient stock")
     
     if medicine.get("requires_prescription") and not order.prescription_file_id:
         raise HTTPException(status_code=400, detail="This medicine requires a prescription")
@@ -1470,7 +1471,16 @@ async def create_order(order: OrderCreate, current_user: User = Depends(get_curr
         if not rx:
             raise HTTPException(status_code=400, detail="Invalid prescription file")
     
-    subtotal = medicine["price"] * order.quantity
+    # ATOMIC stock decrement (race-condition safe)
+    reserved = await db.medicines.find_one_and_update(
+        {"medicine_id": order.medicine_id, "stock": {"$gte": order.quantity}},
+        {"$inc": {"stock": -order.quantity}},
+        projection={"_id": 0, "price": 1, "name": 1, "pharmacy_id": 1, "pharmacy_name": 1}
+    )
+    if not reserved:
+        raise HTTPException(status_code=400, detail="Insufficient stock")
+    
+    subtotal = reserved["price"] * order.quantity
     commission_rate = COMMISSION_RATES["medicine_sale"]
     commission = round(subtotal * commission_rate, 2)
     pharmacy_payout = round(subtotal - commission, 2)
@@ -1480,12 +1490,12 @@ async def create_order(order: OrderCreate, current_user: User = Depends(get_curr
         "order_id": order_id,
         "patient_id": current_user.user_id,
         "patient_name": current_user.name,
-        "pharmacy_id": medicine["pharmacy_id"],
-        "pharmacy_name": medicine["pharmacy_name"],
+        "pharmacy_id": reserved["pharmacy_id"],
+        "pharmacy_name": reserved["pharmacy_name"],
         "medicine_id": order.medicine_id,
-        "medicine_name": medicine["name"],
+        "medicine_name": reserved["name"],
         "quantity": order.quantity,
-        "unit_price": medicine["price"],
+        "unit_price": reserved["price"],
         "subtotal": subtotal,
         "commission_rate": commission_rate,
         "commission_amount": commission,
@@ -1497,19 +1507,13 @@ async def create_order(order: OrderCreate, current_user: User = Depends(get_curr
     }
     await db.orders.insert_one(order_doc)
     
-    # Decrease stock
-    await db.medicines.update_one(
-        {"medicine_id": order.medicine_id},
-        {"$inc": {"stock": -order.quantity}}
-    )
-    
     # Create notification for pharmacy
     await db.notifications.insert_one({
         "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
-        "user_id": medicine["pharmacy_id"],
+        "user_id": reserved["pharmacy_id"],
         "type": "new_order",
         "title": "New Medicine Order",
-        "message": f"{current_user.name} ordered {order.quantity}x {medicine['name']}",
+        "message": f"{current_user.name} ordered {order.quantity}x {reserved['name']}",
         "data": {"order_id": order_id},
         "is_read": False,
         "created_at": datetime.now(timezone.utc).isoformat()
@@ -1536,7 +1540,8 @@ async def update_order(
     update: OrderUpdate,
     current_user: User = Depends(get_current_user)
 ):
-    """Update order status. Pharmacy can confirm/ship/deliver. Patient can cancel pending."""
+    """Update order status. Pharmacy can confirm/ship/deliver. Patient can cancel pending only.
+    Cancellation restores medicine stock."""
     order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -1545,9 +1550,23 @@ async def update_order(
         raise HTTPException(status_code=403, detail="Not authorized")
     
     if update.status:
-        # Patient can only cancel
-        if current_user.user_id == order["patient_id"] and update.status != "cancelled":
-            raise HTTPException(status_code=403, detail="Patient can only cancel")
+        # Patient can only cancel, and only pending orders
+        if current_user.user_id == order["patient_id"]:
+            if update.status != "cancelled":
+                raise HTTPException(status_code=403, detail="Patient can only cancel")
+            if order["status"] != "pending":
+                raise HTTPException(status_code=400, detail="Can only cancel pending orders")
+        
+        # Cannot change status of already-cancelled or delivered orders
+        if order["status"] in ["cancelled", "delivered"]:
+            raise HTTPException(status_code=400, detail=f"Cannot update {order['status']} order")
+        
+        # Restore stock on cancellation
+        if update.status == "cancelled" and order["status"] != "cancelled":
+            await db.medicines.update_one(
+                {"medicine_id": order["medicine_id"]},
+                {"$inc": {"stock": order["quantity"]}}
+            )
         
         await db.orders.update_one({"order_id": order_id}, {"$set": {"status": update.status}})
         
@@ -1558,7 +1577,7 @@ async def update_order(
             "user_id": other_id,
             "type": "order_update",
             "title": "Order Status Updated",
-            "message": f"Order {order_id} is now {update.status}",
+            "message": f"Order is now {update.status}",
             "data": {"order_id": order_id, "status": update.status},
             "is_read": False,
             "created_at": datetime.now(timezone.utc).isoformat()
@@ -1638,13 +1657,14 @@ async def commission_summary(current_user: User = Depends(get_current_user)):
     
     # Doctor: aggregate completed video appointments (commission applies)
     if current_user.user_type == "Doctor":
-        # Each completed video appointment = consultation fee (default $30 - in real app, doctor sets)
         completed = await db.appointments.count_documents({
             "doctor_id": current_user.user_id,
             "status": "completed",
             "appointment_type": "video"
         })
-        consultation_fee = 30  # Default; doctor can set in their profile
+        # Read consultation fee from doctor's profile (fallback: $30)
+        doc = await db.users.find_one({"user_id": current_user.user_id}, {"_id": 0, "profile_data": 1})
+        consultation_fee = float((doc or {}).get("profile_data", {}).get("consultation_fee") or 30)
         gmv = completed * consultation_fee
         commission_rate = COMMISSION_RATES["consultation"]
         commission = round(gmv * commission_rate, 2)
@@ -1660,6 +1680,245 @@ async def commission_summary(current_user: User = Depends(get_current_user)):
         }
     
     return {"role": current_user.user_type, "gmv": 0, "commission_total": 0}
+
+
+# ============= MONTHLY REPORTS (Simulated Email via Resend) =============
+async def generate_pharmacy_report(user_id: str, year: int, month: int) -> dict:
+    """Compute pharmacy monthly report data"""
+    start = datetime(year, month, 1, tzinfo=timezone.utc).isoformat()
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc).isoformat()
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=timezone.utc).isoformat()
+    
+    # All orders for this pharmacy in the month
+    pipeline = [
+        {"$match": {
+            "pharmacy_id": user_id,
+            "created_at": {"$gte": start, "$lt": end},
+            "status": {"$ne": "cancelled"}
+        }},
+        {"$group": {
+            "_id": "$medicine_name",
+            "quantity": {"$sum": "$quantity"},
+            "revenue": {"$sum": "$subtotal"}
+        }},
+        {"$sort": {"revenue": -1}},
+        {"$limit": 5}
+    ]
+    top_medicines = await db.orders.aggregate(pipeline).to_list(5)
+    
+    summary_pipeline = [
+        {"$match": {
+            "pharmacy_id": user_id,
+            "created_at": {"$gte": start, "$lt": end},
+            "status": {"$ne": "cancelled"}
+        }},
+        {"$group": {
+            "_id": None,
+            "total_orders": {"$sum": 1},
+            "gmv": {"$sum": "$subtotal"},
+            "commission_total": {"$sum": "$commission_amount"},
+            "payout_total": {"$sum": "$pharmacy_payout"}
+        }}
+    ]
+    summary = await db.orders.aggregate(summary_pipeline).to_list(1)
+    s = summary[0] if summary else {"total_orders": 0, "gmv": 0, "commission_total": 0, "payout_total": 0}
+    s.pop("_id", None)
+    
+    # Cancelled orders count
+    cancelled = await db.orders.count_documents({
+        "pharmacy_id": user_id,
+        "created_at": {"$gte": start, "$lt": end},
+        "status": "cancelled"
+    })
+    
+    return {
+        "role": "Pharmacy",
+        "period": f"{year}-{month:02d}",
+        **s,
+        "cancelled_orders": cancelled,
+        "top_medicines": [{"name": m["_id"], "quantity": m["quantity"], "revenue": m["revenue"]} for m in top_medicines]
+    }
+
+
+async def generate_doctor_report(user_id: str, year: int, month: int) -> dict:
+    """Compute doctor monthly report data"""
+    start = datetime(year, month, 1, tzinfo=timezone.utc).isoformat()
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc).isoformat()
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=timezone.utc).isoformat()
+    
+    completed = await db.appointments.count_documents({
+        "doctor_id": user_id,
+        "status": "completed",
+        "appointment_type": "video",
+        "created_at": {"$gte": start, "$lt": end}
+    })
+    total_appts = await db.appointments.count_documents({
+        "doctor_id": user_id,
+        "created_at": {"$gte": start, "$lt": end}
+    })
+    
+    doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "profile_data": 1})
+    consultation_fee = float((doc or {}).get("profile_data", {}).get("consultation_fee") or 30)
+    gmv = completed * consultation_fee
+    commission = round(gmv * COMMISSION_RATES["consultation"], 2)
+    
+    # Average rating from reviews
+    review_pipeline = [
+        {"$match": {"reviewee_id": user_id}},
+        {"$group": {"_id": None, "avg_rating": {"$avg": "$rating"}, "count": {"$sum": 1}}}
+    ]
+    rev = await db.reviews.aggregate(review_pipeline).to_list(1)
+    avg_rating = round(rev[0]["avg_rating"], 2) if rev else 0
+    review_count = rev[0]["count"] if rev else 0
+    
+    return {
+        "role": "Doctor",
+        "period": f"{year}-{month:02d}",
+        "total_appointments": total_appts,
+        "completed_consultations": completed,
+        "consultation_fee": consultation_fee,
+        "gmv": gmv,
+        "commission_total": commission,
+        "payout_total": round(gmv - commission, 2),
+        "avg_rating": avg_rating,
+        "total_reviews": review_count
+    }
+
+
+async def generate_engineer_report(user_id: str, year: int, month: int) -> dict:
+    """Compute engineer monthly report data"""
+    review_pipeline = [
+        {"$match": {"reviewee_id": user_id}},
+        {"$group": {"_id": None, "avg_rating": {"$avg": "$rating"}, "count": {"$sum": 1}}}
+    ]
+    rev = await db.reviews.aggregate(review_pipeline).to_list(1)
+    avg_rating = round(rev[0]["avg_rating"], 2) if rev else 0
+    review_count = rev[0]["count"] if rev else 0
+    
+    return {
+        "role": "Biomedical Engineer",
+        "period": f"{year}-{month:02d}",
+        "avg_rating": avg_rating,
+        "total_reviews": review_count,
+        "note": "Service request tracking will be added in future updates."
+    }
+
+
+@api_router.get("/reports/monthly")
+async def get_monthly_report(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get current user's monthly performance report. Defaults to previous month."""
+    if current_user.user_type not in ["Pharmacy", "Doctor", "Biomedical Engineer"]:
+        raise HTTPException(status_code=403, detail="Reports available for Pharmacy/Doctor/Engineer only")
+    
+    # Default to previous month
+    if not year or not month:
+        now = datetime.now(timezone.utc)
+        if now.month == 1:
+            year = now.year - 1
+            month = 12
+        else:
+            year = now.year
+            month = now.month - 1
+    
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="Month must be 1-12")
+    
+    if current_user.user_type == "Pharmacy":
+        return await generate_pharmacy_report(current_user.user_id, year, month)
+    elif current_user.user_type == "Doctor":
+        return await generate_doctor_report(current_user.user_id, year, month)
+    else:
+        return await generate_engineer_report(current_user.user_id, year, month)
+
+
+@api_router.post("/reports/monthly/send")
+async def send_monthly_report(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Generate and 'send' monthly report via simulated email (Resend simulation).
+    In production this would call Resend API. Currently logs + saves to DB + creates notification."""
+    # Get the report
+    report = await get_monthly_report(year, month, current_user)
+    
+    # Build email HTML (simulated)
+    email_html = f"""
+    <h2>Your {report.get('period')} Performance Report — Afghan Health Portal</h2>
+    <p>Hello {current_user.name},</p>
+    <p>Here is your monthly summary:</p>
+    <ul>
+    """
+    for k, v in report.items():
+        if k not in ["role", "period", "note", "top_medicines"]:
+            email_html += f"<li><b>{k.replace('_', ' ').title()}:</b> {v}</li>"
+    email_html += "</ul>"
+    
+    if "top_medicines" in report and report["top_medicines"]:
+        email_html += "<h3>Top 5 Medicines</h3><ol>"
+        for m in report["top_medicines"]:
+            email_html += f"<li>{m['name']}: {m['quantity']} units / ${m['revenue']:.2f}</li>"
+        email_html += "</ol>"
+    
+    email_html += "<p>Keep up the great work! 💚</p>"
+    
+    # Save report to DB
+    report_doc = {
+        "report_id": f"report_{uuid.uuid4().hex[:12]}",
+        "user_id": current_user.user_id,
+        "user_email": current_user.email,
+        "user_name": current_user.name,
+        "period": report.get("period"),
+        "data": report,
+        "email_html": email_html,
+        "delivery_status": "SIMULATED_SENT",  # mocked — would be "SENT" via Resend
+        "delivery_provider": "resend_mock",
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.monthly_reports.insert_one(report_doc)
+    
+    # Create notification for user
+    await db.notifications.insert_one({
+        "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+        "user_id": current_user.user_id,
+        "type": "monthly_report",
+        "title": f"📊 Your {report.get('period')} Report is Ready",
+        "message": "Check your monthly performance summary.",
+        "data": {"report_id": report_doc["report_id"], "period": report.get("period")},
+        "is_read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    # Log to backend (simulating Resend send)
+    logger.info(f"[MOCKED EMAIL] Monthly report sent to {current_user.email} for period {report.get('period')}")
+    
+    report_doc.pop("_id", None)
+    return {
+        "message": "Monthly report generated and 'sent' (MOCKED via Resend simulation)",
+        "report_id": report_doc["report_id"],
+        "delivery_status": report_doc["delivery_status"],
+        "to": current_user.email,
+        "report": report
+    }
+
+
+@api_router.get("/reports/me")
+async def list_my_reports(current_user: User = Depends(get_current_user)):
+    """List all saved monthly reports for current user"""
+    reports = await db.monthly_reports.find(
+        {"user_id": current_user.user_id},
+        {"_id": 0, "email_html": 0}
+    ).sort("created_at", -1).to_list(50)
+    return {"count": len(reports), "reports": reports}
 
 
 # ============= BASIC ROUTES =============

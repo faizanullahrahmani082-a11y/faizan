@@ -72,6 +72,13 @@ export const translations = {
     commission: 'Commission', gmvDashboard: 'Revenue Dashboard', totalGmv: 'Total Sales (GMV)',
     commissionTotal: 'Platform Commission', payoutTotal: 'Your Payout',
     uploadProfilePicture: 'Upload Profile Picture', uploadingFile: 'Uploading...', uploadSuccess: 'Uploaded!',
+    
+    // Phase 5: Reports
+    reports: 'Reports', monthlyReports: 'Monthly Reports', generateReport: 'Generate Report',
+    sendReport: 'Send via Email', noReports: 'No reports yet',
+    period: 'Period', totalOrders: 'Total Orders', avgRating: 'Average Rating',
+    topMedicines: 'Top Selling Medicines', consultationFee: 'Consultation Fee (USD)',
+    reportSentMock: 'Report sent! (Email simulated via Resend)', viewReport: 'View Report',
   },
 
   fa: {
@@ -137,6 +144,12 @@ export const translations = {
     commission: 'کمیسیون', gmvDashboard: 'داشبورد درآمد', totalGmv: 'مجموع فروش',
     commissionTotal: 'کمیسیون پلتفرم', payoutTotal: 'سهم شما',
     uploadProfilePicture: 'بارگذاری عکس پروفایل', uploadingFile: 'در حال بارگذاری...', uploadSuccess: 'بارگذاری شد!',
+
+    reports: 'گزارش‌ها', monthlyReports: 'گزارش‌های ماهانه', generateReport: 'تولید گزارش',
+    sendReport: 'ارسال از طریق ایمیل', noReports: 'هیچ گزارشی موجود نیست',
+    period: 'دوره', totalOrders: 'مجموع سفارش‌ها', avgRating: 'میانگین امتیاز',
+    topMedicines: 'پرفروش‌ترین داروها', consultationFee: 'هزینه ویزیت (دلار)',
+    reportSentMock: 'گزارش ارسال شد! (شبیه‌سازی شده)', viewReport: 'مشاهده گزارش',
   },
 
   ps: {
@@ -190,5 +203,23 @@ export const translations = {
 
     paymentSuccess: 'تادیه بریالۍ وه!', appointmentBooked: 'ګمارنه ثبت شوه!',
     medicineAdded: 'درمل اضافه شو!', error: 'تېروتنه رامنځته شوه',
+
+    notifications: 'خبرتیاوې', markAllRead: 'ټول د لوستل شوي په توګه نښه کړئ', noNotifications: 'هیڅ خبرتیا نشته',
+    schedule: 'مهالویش', mySchedule: 'زما مهالویش', weeklyTemplate: 'اونیز ټیمپلیټ',
+    addSlot: 'سلاټ اضافه کړئ', removeSlot: 'لرې کړئ', startTime: 'د پیل وخت', endTime: 'د پای وخت',
+    sunday: 'یکشنبه', monday: 'دوشنبه', tuesday: 'سه شنبه', wednesday: 'چهارشنبه',
+    thursday: 'پنجشنبه', friday: 'جمعه', saturday: 'شنبه',
+    orders: 'فرمایشات', myOrders: 'زما فرمایشات', placeOrder: 'فرمایش ورکړئ', orderNow: 'فرمایش',
+    quantity: 'مقدار', uploadPrescription: 'نسخه پورته کړئ', prescriptionRequired: 'نسخې ته اړتیا',
+    deliveryAddress: 'د لیږد پته', orderStatus: 'حالت', shipped: 'لیږل شوی', delivered: 'تحویل شوی',
+    commission: 'کمیشن', gmvDashboard: 'د عاید ډشبورډ', totalGmv: 'ټول پلور',
+    commissionTotal: 'د پلیټ فارم کمیشن', payoutTotal: 'ستاسو ګټه',
+    uploadProfilePicture: 'د پروفایل انځور پورته کړئ', uploadingFile: 'پورته کیږي...', uploadSuccess: 'پورته شو!',
+
+    reports: 'راپورونه', monthlyReports: 'میاشتنۍ راپورونه', generateReport: 'راپور جوړ کړئ',
+    sendReport: 'د ایمیل له لارې ولېږئ', noReports: 'هیڅ راپور نشته',
+    period: 'دوره', totalOrders: 'ټول فرمایشات', avgRating: 'منځنۍ درجه',
+    topMedicines: 'لومړي خرڅونکي درمل', consultationFee: 'د معاینې فیس (ډالر)',
+    reportSentMock: 'راپور ولیږل شو! (سیمولیشن)', viewReport: 'راپور وګورئ',
   }
 };

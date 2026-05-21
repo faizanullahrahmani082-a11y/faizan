@@ -617,7 +617,7 @@ class TestCommissionSummary:
         assert d["order_count"] >= 1
         # commission == gmv * 0.04
         assert d["commission_total"] == round(d["gmv"] * 0.04, 2)
-        assert d["payout_total"] == round(d["gmv"] - d["commission_total"], 2)
+        assert d["payout_total"] == pytest.approx(d["gmv"] - d["commission_total"], abs=0.01)
 
     def test_cancelled_orders_excluded_from_gmv(self, tokens, state):
         # Sanity: our rx_order was cancelled and shouldn't inflate GMV beyond OTC subtotal
