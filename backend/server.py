@@ -47,6 +47,9 @@ class User(BaseModel):
     picture: Optional[str] = None
     phone: Optional[str] = None
     profile_data: Optional[dict] = None  # role-specific profile fields
+    is_verified: Optional[bool] = False
+    is_featured: Optional[bool] = False
+    featured_until: Optional[str] = None
     created_at: datetime
 
 

@@ -1,89 +1,71 @@
 # Afghan Health Portal - PRD
 
 ## Original Problem Statement
-Building a 3-language (Pashto, Farsi/Dari, English) health application with:
-- Modern login/register screen
-- 4 user types: Doctor, Patient, Pharmacy, Biomedical Engineer
-- Profile data, GPS location, and Rating/Review system
+3-language (Pashto, Farsi/Dari, English) health application supporting Doctor/Patient/Pharmacy/Biomedical Engineer with profile, GPS, reviews, appointments, medicine catalog, AI assistant, maps, video calls, and premium subscriptions.
 
-## Architecture
+## Tech Stack
+- **Backend**: FastAPI + Motor (MongoDB async), JWT + Google OAuth, emergentintegrations LlmChat (Gemini 3.1 Pro)
+- **Frontend**: React 19, React Router 7, Tailwind, Shadcn UI, Leaflet (maps), SimplePeer (WebRTC)
+- **Languages**: EN (Outfit) / FA-DR (Vazirmatn) / PS (Vazirmatn) with RTL support
 
-### Tech Stack
-- **Backend**: FastAPI + Motor (MongoDB async)
-- **Frontend**: React 19 + React Router 7 + Tailwind + Shadcn UI
-- **Database**: MongoDB
-- **Auth**: JWT (email/password) + Emergent Google OAuth
-- **LLM**: Gemini 3.1 Pro (via Emergent LLM Key) for medical translation
-- **Fonts**: Outfit (LTR/English) + Vazirmatn (RTL/Farsi/Pashto)
-
-### Color Palette
-- Primary: Medical Teal (`#0F766E`)
-- Secondary: Active Emerald (`#10B981`)
-- Accent: Urgent Coral (`#F97316`)
-
-## User Personas
-1. **Doctor**: Provides consultations, can review Biomedical Engineers
-2. **Patient**: Reviews Doctors and Pharmacies
-3. **Pharmacy**: Business entity, reviewed by Patients, can review Engineers
-4. **Biomedical Engineer**: Reviewed by Doctors and Pharmacies (B2B service)
+## Color Palette
+- Primary: Medical Teal `#0F766E`
+- Secondary: Active Emerald `#10B981`
+- Accent: Urgent Coral `#F97316`
 
 ## Implementation Status
 
-### ✅ Phase 1 (Completed - Feb 2026): Authentication & Multilingual UI
-- JWT email/password auth (register, login, logout, /auth/me)
-- Emergent Google OAuth integration with httpOnly cookies
-- 3-language support (English, Farsi/Dari, Pashto) with RTL layout
-- Browser language auto-detection + manual switcher
-- Dark mode toggle
-- Split-screen login/register UI with role selector (2x2 grid)
-- Protected Dashboard route
-- LLM Translation endpoint (Gemini 3.1 Pro)
-- **Tests**: 20/20 backend passing
+### ✅ Phase 1 (Feb 2026) — Authentication & Multilingual UI
+- JWT + Google OAuth, /auth/me, logout
+- 3-language UI with RTL, dark mode
+- Role selector login/register
+- LLM translation endpoint (Gemini 3.1 Pro)
+- **20/20 tests passing**
 
-### ✅ Phase 2 (Completed - Feb 2026): Database Architecture
-- Role-specific profile models: DoctorProfile, PatientProfile, PharmacyProfile, EngineerProfile
-- Profile CRUD: GET/PUT /api/profile, GET /api/profile/{user_id} (with PHI redaction for patients)
-- GPS Location: POST /api/location, GET /api/location/me, GET /api/nearby (2dsphere geospatial)
-- Reviews: POST/GET/DELETE /api/reviews with role-pair rules + tags
-- Review rules: Patient→{Doctor, Pharmacy}, Doctor→Engineer, Pharmacy→Engineer
-- Rating aggregation: average + tag counts
-- **Tests**: 32/32 Phase 2 + 20/20 regression = 52/52 passing
+### ✅ Phase 2 (Feb 2026) — Database Architecture
+- Role-specific profile models (Doctor/Patient/Pharmacy/Engineer)
+- GeoJSON location + 2dsphere nearby search
+- Reviews with role rules + tag aggregation
+- **32/32 Phase 2 + 20/20 regression = 52/52 passing**
+
+### ✅ Phase 3 (Feb 2026) — Core Features
+- **Appointments**: Patient books Doctor (calendar + time slots + video/in-person types)
+- **Medicines**: Pharmacy CRUD catalog + public search (name/category/pharmacy)
+- **AI Chat**: Gemini 3.1 Pro symptom checker + device fault helper (persistent sessions)
+- **Subscriptions**: Mock payment ($9.99/mo, $99.99/yr) → verified + featured badges
+- **Video Rooms**: WebRTC signaling via HTTP polling, SimplePeer for P2P
+- **Pharmacy Map**: Leaflet/OpenStreetMap with 24/7 color filter
+- Tab-based Dashboard with role-aware visibility
+- All UI in 3 languages
+- **47/47 Phase 3 + 99/99 combined regression = 99/99 passing**
+- Fixed: `/auth/me` now exposes `is_verified`, `is_featured`, `featured_until`
 
 ## MongoDB Collections
 | Collection | Purpose | Key Fields |
 |------------|---------|------------|
-| `users` | User accounts | user_id (UUID), email, name, user_type, profile_data |
-| `user_sessions` | Google OAuth sessions | user_id, session_token, expires_at |
-| `locations` | GPS data | user_id, location (GeoJSON Point), address |
-| `reviews` | Rating/reviews | review_id, reviewer_id, reviewee_id, rating, tags |
+| `users` | Accounts | user_id, user_type, profile_data, is_verified, is_featured |
+| `user_sessions` | Google OAuth | user_id, session_token, expires_at |
+| `locations` | GPS | user_id, location (GeoJSON), address |
+| `reviews` | Ratings | review_id, reviewer_id, reviewee_id, rating, tags |
+| `appointments` | Bookings | appointment_id, doctor_id, patient_id, scheduled_at, status, video_room_id |
+| `medicines` | Pharmacy catalog | medicine_id, pharmacy_id, name, price, stock |
+| `chat_sessions` | AI chats | session_id, user_id, chat_type, messages[] |
+| `subscriptions` | Premium | subscription_id, user_id, plan, expires_at |
+| `video_rooms` | WebRTC | room_id, host_id, participants[], signals[] |
 
-## API Endpoints Summary
-
-### Auth
-- POST `/api/auth/register` — JWT signup
-- POST `/api/auth/login` — JWT login
-- POST `/api/auth/google/session` — Exchange Google session_id
-- GET `/api/auth/me` — Current user info
-- POST `/api/auth/logout` — Clear session
-
-### Profile
-- GET `/api/profile` — Own profile (full)
-- PUT `/api/profile` — Update own profile + role-specific fields
-- GET `/api/profile/{user_id}` — Public profile (PHI redacted)
-
-### Location
-- POST `/api/location` — Set/update GPS
-- GET `/api/location/me` — Get own location
-- GET `/api/nearby?user_type=X&latitude=&longitude=&radius_km=` — Find nearby users
-
-### Reviews
-- POST `/api/reviews` — Create review (role rules enforced)
-- GET `/api/reviews/user/{user_id}` — Reviews for user + aggregates
-- GET `/api/reviews/me` — Reviews I've written
-- DELETE `/api/reviews/{review_id}` — Delete own review
-
-### LLM
-- POST `/api/translate` — Translate text via Gemini 3.1 Pro
+## API Endpoints
+| Domain | Endpoints |
+|--------|-----------|
+| Auth | register, login, google/session, me, logout |
+| Profile | GET/PUT /profile, GET /profile/{id} |
+| Location | POST /location, GET /location/me, GET /nearby |
+| Reviews | POST /reviews, GET /reviews/user/{id}, GET /reviews/me, DELETE |
+| Appointments | POST, GET /me, PUT, GET /doctor/{id}/booked-slots |
+| Medicines | POST, GET (search), PUT, DELETE |
+| AI Chat | POST /start, POST /{id}/message, GET /me, GET /{id} |
+| Subscriptions | GET /plans, POST /subscribe, GET /me, POST /cancel |
+| Video | POST /rooms, /join, /signal, GET /signals, POST /close |
+| Public | GET /pharmacies/all, POST /translate |
 
 ## Test Credentials (`/app/memory/test_credentials.md`)
 - doctor@test.com / Doctor123!
@@ -93,30 +75,30 @@ Building a 3-language (Pashto, Farsi/Dari, English) health application with:
 
 ## Prioritized Backlog (Next Tasks)
 
-### P0 (High - Core MVP)
-- [ ] Doctor consultation booking system (with calendar)
-- [ ] Pharmacy product/medicine catalog + search
-- [ ] Patient medical history tracking
-- [ ] Engineer service request workflow (with device fault description AI assistant)
+### P0 (High Priority)
+- [ ] Real-time notifications (FCM/WebSocket) for appointment status changes
+- [ ] Prescription upload (object storage) → linked to medicine purchase
+- [ ] Doctor's available-slots system (weekly schedule template)
+- [ ] User profile picture upload
 
-### P1 (Medium - Differentiators)
-- [ ] Google Maps integration (24/7 pharmacy display, nearest pharmacy)
-- [ ] WebRTC/Agora video calls for tele-health
-- [ ] AI Medical Assistant chat (Gemini) — symptom checker, device fault description
-- [ ] Push notifications (FCM) for appointments/messages
-- [ ] User profile picture upload (object storage)
+### P1 (Medium)
+- [ ] Migrate from HTTP polling to WebSocket for video signaling
+- [ ] Real Stripe payment integration to replace mock
+- [ ] Search/filter by language preference (find Pashto-speaking doctors)
+- [ ] Order/cart system for medicine purchase
+- [ ] Cron job to expire `is_featured` at `featured_until`
 
-### P2 (Low - Polish)
-- [ ] Migrate legacy pharmacist@test.com user → pharmacy
-- [ ] Move 2dsphere index creation to app startup
-- [ ] Add pagination to reviews/nearby endpoints
-- [ ] Rate limiting on auth endpoints (brute-force protection)
-- [ ] Unique constraint on (reviewer_id, reviewee_id) — one review per pair
-- [ ] Reorder self-review check before role-pair check (dead code cleanup)
-- [ ] Replace heuristic JWT-vs-session token detection with cleaner logic
+### P2 (Polish & Tech Debt)
+- [ ] Split server.py (1200+ lines) into routers/ submodules
+- [ ] Double-booking prevention in POST /appointments
+- [ ] Validate scheduled_at as ISO + future date
+- [ ] Bound video signals array (TTL or cleanup)
+- [ ] Pagination across list endpoints
+- [ ] $lookup aggregation in /pharmacies/all (replace N+1)
+- [ ] Map signals' target_user_id to room participants
 
-## Known Minor Issues (Non-blocking)
-1. Legacy `pharmacist@test.com` user still has deprecated `user_type='Pharmacist'`
-2. `2dsphere` index created on-demand inside `/nearby` (works fine, just not optimal)
-3. No pagination on reviews/nearby (hardcoded 50/500 limit)
-4. Dead-code: self-review 400 check unreachable (role check fires first → 403)
+## Known Minor Issues (Non-blocking - documented in iteration_3.json)
+- Past dates accepted in appointment booking
+- Mock card number accepts non-numeric strings
+- Video signals never garbage-collected (memory grows during call)
+- No badge expiry cron — pharmacy keeps badge until manual cancel
