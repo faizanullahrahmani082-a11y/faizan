@@ -19,7 +19,7 @@ export const translations = {
     selectUserType: 'I am a...',
     doctor: 'Doctor',
     patient: 'Patient',
-    pharmacist: 'Pharmacist',
+    pharmacist: 'Pharmacy',
     biomedicalEngineer: 'Biomedical Engineer',
     
     // Headers
@@ -32,6 +32,7 @@ export const translations = {
     dashboard: 'Dashboard',
     logout: 'Logout',
     welcome: 'Welcome',
+    userType: 'User Type',
   },
   
   fa: {
@@ -54,7 +55,7 @@ export const translations = {
     selectUserType: 'من یک... هستم',
     doctor: 'دکتر',
     patient: 'بیمار',
-    pharmacist: 'داروساز',
+    pharmacist: 'داروخانه',
     biomedicalEngineer: 'مهندس پزشکی',
     
     // Headers
@@ -89,7 +90,7 @@ export const translations = {
     selectUserType: 'زه یو...',
     doctor: 'ډاکټر',
     patient: 'ناروغ',
-    pharmacist: 'درملپلورونکی',
+    pharmacist: 'درملتون',
     biomedicalEngineer: 'بایومیډیکل انجینر',
     
     // Headers

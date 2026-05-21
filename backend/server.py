@@ -43,8 +43,10 @@ class User(BaseModel):
     user_id: str
     email: EmailStr
     name: str
-    user_type: str  # Doctor, Patient, Pharmacist, Biomedical Engineer
+    user_type: str  # Doctor, Patient, Pharmacy, Biomedical Engineer
     picture: Optional[str] = None
+    phone: Optional[str] = None
+    profile_data: Optional[dict] = None  # role-specific profile fields
     created_at: datetime
 
 
@@ -76,6 +78,63 @@ class TranslateRequest(BaseModel):
     text: str
     source_lang: str  # en, fa, ps
     target_lang: str  # en, fa, ps
+
+
+# ============= PROFILE MODELS (Role-specific) =============
+class DoctorProfile(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    specialty: Optional[str] = None
+    license_no: Optional[str] = None
+    hospital: Optional[str] = None
+    years_experience: Optional[int] = None
+    working_hours: Optional[str] = None  # e.g. "Mon-Fri 9:00-17:00"
+
+
+class PatientProfile(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    age: Optional[int] = None
+    gender: Optional[str] = None  # male, female, other
+    blood_type: Optional[str] = None  # A+, B+, O-, etc.
+    chronic_illnesses: Optional[List[str]] = []
+
+
+class PharmacyProfile(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    business_name: Optional[str] = None
+    license_no: Optional[str] = None
+    is_24_7: Optional[bool] = False
+    opening_hours: Optional[str] = None  # e.g. "08:00"
+    closing_hours: Optional[str] = None  # e.g. "22:00"
+
+
+class EngineerProfile(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    specialty: Optional[List[str]] = []  # device modalities, e.g. ["MRI", "X-Ray", "Ultrasound"]
+    certifications: Optional[List[str]] = []
+    years_experience: Optional[int] = None
+
+
+class ProfileUpdate(BaseModel):
+    """Generic profile update - includes name, picture, phone, and role-specific data"""
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    picture: Optional[str] = None
+    profile_data: Optional[dict] = None  # role-specific fields
+
+
+# ============= LOCATION MODELS =============
+class LocationUpdate(BaseModel):
+    latitude: float
+    longitude: float
+    address: Optional[str] = None
+
+
+# ============= REVIEW MODELS =============
+class ReviewCreate(BaseModel):
+    reviewee_id: str  # who is being reviewed
+    rating: int  # 1-5
+    comment: Optional[str] = None
+    tags: Optional[List[str]] = []  # e.g. ["Fast response", "Accurate diagnosis"]
 
 
 # ============= AUTH HELPERS =============
@@ -163,10 +222,13 @@ async def register(user_data: UserRegister):
         "user_type": user_data.user_type,
         "password": hashed_pw,
         "picture": None,
+        "phone": None,
+        "profile_data": {},
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     
     await db.users.insert_one(user_doc)
+    user_doc.pop("_id", None)
     
     # Create JWT token
     access_token = create_access_token({"sub": user_id})
@@ -231,6 +293,8 @@ async def google_session(request: GoogleSessionRequest, response: Response):
             "name": google_data["name"],
             "user_type": "Patient",  # Default
             "picture": google_data.get("picture"),
+            "phone": None,
+            "profile_data": {},
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         await db.users.insert_one(user_doc)
@@ -276,6 +340,254 @@ async def logout(request: Request, response: Response):
         await db.user_sessions.delete_many({"session_token": token})
         response.delete_cookie(key="session_token", path="/")
     return {"message": "Logged out successfully"}
+
+
+# ============= PROFILE ROUTES =============
+def _validate_profile_data(user_type: str, profile_data: dict) -> dict:
+    """Validate role-specific profile fields"""
+    if not profile_data:
+        return {}
+    
+    if user_type == "Doctor":
+        return DoctorProfile(**profile_data).model_dump(exclude_none=True)
+    elif user_type == "Patient":
+        return PatientProfile(**profile_data).model_dump(exclude_none=True)
+    elif user_type == "Pharmacy":
+        return PharmacyProfile(**profile_data).model_dump(exclude_none=True)
+    elif user_type == "Biomedical Engineer":
+        return EngineerProfile(**profile_data).model_dump(exclude_none=True)
+    return profile_data
+
+
+@api_router.get("/profile")
+async def get_profile(current_user: User = Depends(get_current_user)):
+    """Get current user's full profile"""
+    user_doc = await db.users.find_one(
+        {"user_id": current_user.user_id},
+        {"_id": 0, "password": 0}
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user_doc
+
+
+@api_router.put("/profile")
+async def update_profile(update: ProfileUpdate, current_user: User = Depends(get_current_user)):
+    """Update current user's profile (name, phone, picture, role-specific data)"""
+    update_doc = {}
+    if update.name is not None:
+        update_doc["name"] = update.name
+    if update.phone is not None:
+        update_doc["phone"] = update.phone
+    if update.picture is not None:
+        update_doc["picture"] = update.picture
+    if update.profile_data is not None:
+        # Validate role-specific fields
+        validated = _validate_profile_data(current_user.user_type, update.profile_data)
+        update_doc["profile_data"] = validated
+    
+    if update_doc:
+        await db.users.update_one(
+            {"user_id": current_user.user_id},
+            {"$set": update_doc}
+        )
+    
+    user_doc = await db.users.find_one(
+        {"user_id": current_user.user_id},
+        {"_id": 0, "password": 0}
+    )
+    return user_doc
+
+
+@api_router.get("/profile/{user_id}")
+async def get_user_profile(user_id: str, current_user: User = Depends(get_current_user)):
+    """Get another user's public profile (no email/phone for privacy)"""
+    user_doc = await db.users.find_one(
+        {"user_id": user_id},
+        {"_id": 0, "password": 0, "email": 0}
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user_doc
+
+
+# ============= LOCATION ROUTES =============
+@api_router.post("/location")
+async def update_location(loc: LocationUpdate, current_user: User = Depends(get_current_user)):
+    """Update or set current user's GPS location (stored as GeoJSON for geospatial queries)"""
+    location_doc = {
+        "user_id": current_user.user_id,
+        "user_type": current_user.user_type,
+        "location": {
+            "type": "Point",
+            "coordinates": [loc.longitude, loc.latitude]  # GeoJSON: [lng, lat]
+        },
+        "address": loc.address,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.locations.update_one(
+        {"user_id": current_user.user_id},
+        {"$set": location_doc},
+        upsert=True
+    )
+    
+    location_doc.pop("_id", None)
+    return location_doc
+
+
+@api_router.get("/location/me")
+async def get_my_location(current_user: User = Depends(get_current_user)):
+    """Get current user's saved location"""
+    loc = await db.locations.find_one({"user_id": current_user.user_id}, {"_id": 0})
+    if not loc:
+        raise HTTPException(status_code=404, detail="No location set")
+    return loc
+
+
+@api_router.get("/nearby")
+async def find_nearby(
+    user_type: str,
+    latitude: float,
+    longitude: float,
+    radius_km: float = 5.0,
+    current_user: User = Depends(get_current_user)
+):
+    """Find nearby users by type within radius (km). Returns list with profile + distance."""
+    # Ensure geospatial index exists (idempotent)
+    try:
+        await db.locations.create_index([("location", "2dsphere")])
+    except Exception:
+        pass
+    
+    radius_meters = radius_km * 1000
+    nearby_locations = await db.locations.find(
+        {
+            "user_type": user_type,
+            "location": {
+                "$near": {
+                    "$geometry": {
+                        "type": "Point",
+                        "coordinates": [longitude, latitude]
+                    },
+                    "$maxDistance": radius_meters
+                }
+            }
+        },
+        {"_id": 0}
+    ).to_list(50)
+    
+    # Enrich with user profile
+    results = []
+    for loc in nearby_locations:
+        user = await db.users.find_one(
+            {"user_id": loc["user_id"]},
+            {"_id": 0, "password": 0, "email": 0}
+        )
+        if user:
+            results.append({
+                "user": user,
+                "location": loc
+            })
+    
+    return {"count": len(results), "results": results}
+
+
+# ============= REVIEW ROUTES =============
+# Allowed review pairs: (reviewer_type -> reviewee_type)
+ALLOWED_REVIEW_PAIRS = {
+    "Patient": ["Doctor", "Pharmacy"],
+    "Doctor": ["Biomedical Engineer"],
+    "Pharmacy": ["Biomedical Engineer"],
+}
+
+
+@api_router.post("/reviews")
+async def create_review(review: ReviewCreate, current_user: User = Depends(get_current_user)):
+    """Add a review. Patient->Doctor/Pharmacy, Doctor/Pharmacy->Biomedical Engineer."""
+    if review.rating < 1 or review.rating > 5:
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+    
+    # Find reviewee
+    reviewee = await db.users.find_one({"user_id": review.reviewee_id}, {"_id": 0})
+    if not reviewee:
+        raise HTTPException(status_code=404, detail="Reviewee not found")
+    
+    # Validate role rule
+    allowed = ALLOWED_REVIEW_PAIRS.get(current_user.user_type, [])
+    if reviewee["user_type"] not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{current_user.user_type} cannot review {reviewee['user_type']}"
+        )
+    
+    if review.reviewee_id == current_user.user_id:
+        raise HTTPException(status_code=400, detail="Cannot review yourself")
+    
+    review_doc = {
+        "review_id": f"review_{uuid.uuid4().hex[:12]}",
+        "reviewer_id": current_user.user_id,
+        "reviewer_name": current_user.name,
+        "reviewer_type": current_user.user_type,
+        "reviewee_id": review.reviewee_id,
+        "reviewee_type": reviewee["user_type"],
+        "rating": review.rating,
+        "comment": review.comment,
+        "tags": review.tags or [],
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.reviews.insert_one(review_doc)
+    review_doc.pop("_id", None)
+    return review_doc
+
+
+@api_router.get("/reviews/user/{user_id}")
+async def get_user_reviews(user_id: str):
+    """Get all reviews for a specific user with aggregate stats"""
+    reviews = await db.reviews.find({"reviewee_id": user_id}, {"_id": 0}).to_list(500)
+    
+    avg_rating = 0
+    if reviews:
+        avg_rating = sum(r["rating"] for r in reviews) / len(reviews)
+    
+    # Aggregate tag counts
+    tag_counts = {}
+    for r in reviews:
+        for tag in r.get("tags", []):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    
+    return {
+        "user_id": user_id,
+        "total_reviews": len(reviews),
+        "average_rating": round(avg_rating, 2),
+        "tag_counts": tag_counts,
+        "reviews": reviews
+    }
+
+
+@api_router.get("/reviews/me")
+async def get_my_reviews(current_user: User = Depends(get_current_user)):
+    """Get all reviews authored by the current user"""
+    reviews = await db.reviews.find(
+        {"reviewer_id": current_user.user_id},
+        {"_id": 0}
+    ).to_list(500)
+    return {"count": len(reviews), "reviews": reviews}
+
+
+@api_router.delete("/reviews/{review_id}")
+async def delete_review(review_id: str, current_user: User = Depends(get_current_user)):
+    """Delete a review (only the author can delete)"""
+    review = await db.reviews.find_one({"review_id": review_id}, {"_id": 0})
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    
+    if review["reviewer_id"] != current_user.user_id:
+        raise HTTPException(status_code=403, detail="You can only delete your own reviews")
+    
+    await db.reviews.delete_one({"review_id": review_id})
+    return {"message": "Review deleted"}
 
 
 # ============= LLM TRANSLATION ROUTE =============

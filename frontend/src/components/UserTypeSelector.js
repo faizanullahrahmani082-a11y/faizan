@@ -9,7 +9,7 @@ const UserTypeSelector = ({ value, onChange }) => {
   const userTypes = [
     { id: 'Doctor', label: t('doctor'), icon: Stethoscope },
     { id: 'Patient', label: t('patient'), icon: User },
-    { id: 'Pharmacist', label: t('pharmacist'), icon: Pill },
+    { id: 'Pharmacy', label: t('pharmacist'), icon: Pill },
     { id: 'Biomedical Engineer', label: t('biomedicalEngineer'), icon: Wrench },
   ];
 
