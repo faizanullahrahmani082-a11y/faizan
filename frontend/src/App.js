@@ -6,6 +6,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import AuthCallback from './pages/AuthCallback';
+import VideoCall from './pages/VideoCall';
 import '@/App.css';
 
 function AppRouter() {
@@ -22,6 +23,7 @@ function AppRouter() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/dashboard" element={<Dashboard />} />
+      <Route path="/video/:roomId" element={<VideoCall />} />
     </Routes>
   );
 }

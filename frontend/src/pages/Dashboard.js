@@ -3,13 +3,18 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useLanguage } from '../LanguageContext';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { Badge } from '../components/ui/badge';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import ThemeToggle from '../components/ThemeToggle';
-import axios from 'axios';
+import AppointmentsTab from '../components/AppointmentsTab';
+import MedicinesTab from '../components/MedicinesTab';
+import AIChatTab from '../components/AIChatTab';
+import MapTab from '../components/MapTab';
+import SubscriptionTab from '../components/SubscriptionTab';
+import { Calendar, Pill, Bot, MapPin, Crown, LayoutDashboard, BadgeCheck, Star } from 'lucide-react';
+import api from '../api';
 import { toast } from 'sonner';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
 
 const Dashboard = () => {
   const { t } = useLanguage();
@@ -19,29 +24,22 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // If user data passed from auth callback, use it
     if (location.state?.user) {
       setUser(location.state.user);
       setLoading(false);
       return;
     }
 
-    // Otherwise verify session
     const verifySession = async () => {
       const token = localStorage.getItem('token');
       if (!token) {
         navigate('/login');
         return;
       }
-
       try {
-        const response = await axios.get(`${API}/auth/me`, {
-          headers: { Authorization: `Bearer ${token}` },
-          withCredentials: true,
-        });
+        const response = await api.get('/auth/me');
         setUser(response.data);
       } catch (error) {
-        console.error('Session verification failed:', error);
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         navigate('/login');
@@ -49,45 +47,47 @@ const Dashboard = () => {
         setLoading(false);
       }
     };
-
     verifySession();
   }, [location, navigate]);
 
   const handleLogout = async () => {
     try {
-      await axios.post(`${API}/auth/logout`, {}, { withCredentials: true });
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      toast.success('Logged out successfully');
-      navigate('/login');
-    } catch (error) {
-      console.error('Logout error:', error);
-      navigate('/login');
-    }
+      await api.post('/auth/logout');
+    } catch {}
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    toast.success('Logged out');
+    navigate('/login');
   };
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-        </div>
+        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
       </div>
     );
   }
 
+  const userType = user?.user_type;
+  const canSubscribe = ['Pharmacy', 'Doctor', 'Biomedical Engineer'].includes(userType);
+
+  // Determine which tabs to show based on role
+  const showAppointments = ['Patient', 'Doctor'].includes(userType);
+  const showMedicines = true; // Everyone can search; Pharmacy can add
+  const showMap = true;
+  const showAI = true; // Everyone has access to AI assistant
+
   return (
     <div className="min-h-screen bg-background" data-testid="dashboard-page">
-      {/* Header */}
-      <header className="border-b bg-card">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+      <header className="border-b bg-card sticky top-0 z-10">
+        <div className="container mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center">
               <span className="text-2xl text-primary-foreground">+</span>
             </div>
-            <span className="text-xl font-semibold">{t('healthPortal')}</span>
+            <span className="text-xl font-semibold hidden sm:inline">{t('healthPortal')}</span>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
             <LanguageSwitcher />
             <ThemeToggle />
             <Button variant="outline" onClick={handleLogout} data-testid="logout-btn">
@@ -97,66 +97,120 @@ const Dashboard = () => {
         </div>
       </header>
 
-      {/* Content */}
-      <main className="container mx-auto px-4 py-12">
-        <div className="max-w-4xl mx-auto space-y-8">
-          <div className="text-start space-y-2">
-            <h1 className="text-4xl font-semibold tracking-tight">
-              {t('welcome')}, {user?.name}!
+      <main className="container mx-auto px-4 py-6">
+        <div className="mb-6">
+          <div className="flex items-center gap-3 mb-1">
+            <h1 className="text-3xl font-semibold tracking-tight text-start">
+              {t('welcome')}, {user?.name}
             </h1>
-            <p className="text-lg text-muted-foreground">
-              {t('userType')}: <span className="font-medium text-foreground">{user?.user_type}</span>
-            </p>
+            {user?.is_verified && <Badge className="bg-primary"><BadgeCheck className="w-3 h-3 me-1" />{t('verified')}</Badge>}
+            {user?.is_featured && <Badge className="bg-yellow-500 text-white"><Star className="w-3 h-3 me-1" />{t('featured')}</Badge>}
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-start">Profile Information</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-start">
-                <div>
-                  <p className="text-sm text-muted-foreground">Email</p>
-                  <p className="font-medium">{user?.email}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">User Type</p>
-                  <p className="font-medium">{user?.user_type}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Account ID</p>
-                  <p className="font-mono text-sm">{user?.user_id}</p>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-start">Quick Actions</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Button variant="outline" className="w-full justify-start" data-testid="view-profile-btn">
-                  View Profile
-                </Button>
-                <Button variant="outline" className="w-full justify-start" data-testid="settings-btn">
-                  Settings
-                </Button>
-                <Button variant="outline" className="w-full justify-start" data-testid="help-btn">
-                  Help & Support
-                </Button>
-              </CardContent>
-            </Card>
-          </div>
-
-          <Card className="bg-gradient-to-r from-primary/10 to-secondary/10 border-primary/20">
-            <CardContent className="p-8 text-start">
-              <h3 className="text-2xl font-semibold mb-2">{t('healthPortal')}</h3>
-              <p className="text-muted-foreground">
-                Your multilingual health platform is ready. This is a placeholder dashboard. More features coming soon!
-              </p>
-            </CardContent>
-          </Card>
+          <p className="text-muted-foreground text-start">
+            {t('userType')}: <span className="font-medium text-foreground">{user?.user_type}</span>
+          </p>
         </div>
+
+        <Tabs defaultValue="overview" className="space-y-6">
+          <TabsList className="w-full flex-wrap h-auto justify-start gap-1">
+            <TabsTrigger value="overview" data-testid="tab-overview">
+              <LayoutDashboard className="w-4 h-4 me-1" /> {t('overview')}
+            </TabsTrigger>
+            {showAppointments && (
+              <TabsTrigger value="appointments" data-testid="tab-appointments">
+                <Calendar className="w-4 h-4 me-1" /> {t('appointments')}
+              </TabsTrigger>
+            )}
+            {showMedicines && (
+              <TabsTrigger value="medicines" data-testid="tab-medicines">
+                <Pill className="w-4 h-4 me-1" /> {t('medicines')}
+              </TabsTrigger>
+            )}
+            {showAI && (
+              <TabsTrigger value="ai" data-testid="tab-ai">
+                <Bot className="w-4 h-4 me-1" /> {t('aiAssistant')}
+              </TabsTrigger>
+            )}
+            {showMap && (
+              <TabsTrigger value="map" data-testid="tab-map">
+                <MapPin className="w-4 h-4 me-1" /> {t('map')}
+              </TabsTrigger>
+            )}
+            {canSubscribe && (
+              <TabsTrigger value="subscription" data-testid="tab-subscription">
+                <Crown className="w-4 h-4 me-1" /> {t('subscription')}
+              </TabsTrigger>
+            )}
+          </TabsList>
+
+          <TabsContent value="overview" className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Card>
+                <CardHeader><CardTitle className="text-start text-base">Profile</CardTitle></CardHeader>
+                <CardContent className="text-start space-y-1 text-sm">
+                  <div><span className="text-muted-foreground">Email:</span> {user?.email}</div>
+                  <div><span className="text-muted-foreground">Type:</span> {user?.user_type}</div>
+                  {user?.phone && <div><span className="text-muted-foreground">Phone:</span> {user.phone}</div>}
+                </CardContent>
+              </Card>
+
+              {showAppointments && (
+                <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => document.querySelector('[data-testid="tab-appointments"]').click()}>
+                  <CardHeader><CardTitle className="text-start text-base flex items-center gap-2"><Calendar className="w-4 h-4" /> {t('appointments')}</CardTitle></CardHeader>
+                  <CardContent className="text-start text-sm text-muted-foreground">
+                    Manage your medical appointments with calendar integration.
+                  </CardContent>
+                </Card>
+              )}
+
+              <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => document.querySelector('[data-testid="tab-ai"]').click()}>
+                <CardHeader><CardTitle className="text-start text-base flex items-center gap-2"><Bot className="w-4 h-4" /> {t('aiAssistant')}</CardTitle></CardHeader>
+                <CardContent className="text-start text-sm text-muted-foreground">
+                  AI symptom checker & device fault helper powered by Gemini.
+                </CardContent>
+              </Card>
+
+              <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => document.querySelector('[data-testid="tab-medicines"]').click()}>
+                <CardHeader><CardTitle className="text-start text-base flex items-center gap-2"><Pill className="w-4 h-4" /> {t('medicines')}</CardTitle></CardHeader>
+                <CardContent className="text-start text-sm text-muted-foreground">
+                  {userType === 'Pharmacy' ? 'Manage your medicine catalog.' : 'Search medicines from nearby pharmacies.'}
+                </CardContent>
+              </Card>
+
+              <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => document.querySelector('[data-testid="tab-map"]').click()}>
+                <CardHeader><CardTitle className="text-start text-base flex items-center gap-2"><MapPin className="w-4 h-4" /> {t('map')}</CardTitle></CardHeader>
+                <CardContent className="text-start text-sm text-muted-foreground">
+                  Find 24/7 pharmacies on the map.
+                </CardContent>
+              </Card>
+
+              {canSubscribe && (
+                <Card className="cursor-pointer hover:shadow-md transition-shadow border-primary/30 bg-gradient-to-br from-primary/5 to-secondary/5" onClick={() => document.querySelector('[data-testid="tab-subscription"]').click()}>
+                  <CardHeader><CardTitle className="text-start text-base flex items-center gap-2"><Crown className="w-4 h-4 text-primary" /> {t('subscription')}</CardTitle></CardHeader>
+                  <CardContent className="text-start text-sm text-muted-foreground">
+                    Get verified badge & featured listing.
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </TabsContent>
+
+          {showAppointments && (
+            <TabsContent value="appointments"><AppointmentsTab user={user} /></TabsContent>
+          )}
+          {showMedicines && (
+            <TabsContent value="medicines"><MedicinesTab user={user} /></TabsContent>
+          )}
+          {showAI && (
+            <TabsContent value="ai"><AIChatTab user={user} /></TabsContent>
+          )}
+          {showMap && (
+            <TabsContent value="map"><MapTab /></TabsContent>
+          )}
+          {canSubscribe && (
+            <TabsContent value="subscription"><SubscriptionTab user={user} /></TabsContent>
+          )}
+        </Tabs>
       </main>
     </div>
   );

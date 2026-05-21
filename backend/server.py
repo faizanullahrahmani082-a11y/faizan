@@ -625,6 +625,558 @@ async def translate_text(request: TranslateRequest, current_user: User = Depends
         raise HTTPException(status_code=500, detail=f"Translation failed: {str(e)}")
 
 
+# ============= PHASE 3 MODELS =============
+class AppointmentCreate(BaseModel):
+    doctor_id: str
+    scheduled_at: str  # ISO datetime
+    appointment_type: str = "video"  # video | in-person
+    notes: Optional[str] = None
+
+
+class AppointmentUpdate(BaseModel):
+    status: Optional[str] = None  # pending | confirmed | cancelled | completed
+    notes: Optional[str] = None
+
+
+class MedicineCreate(BaseModel):
+    name: str
+    generic_name: Optional[str] = None
+    category: Optional[str] = None  # antibiotic, painkiller, vitamin, etc.
+    manufacturer: Optional[str] = None
+    price: float
+    stock: int = 0
+    description: Optional[str] = None
+    requires_prescription: bool = False
+
+
+class MedicineUpdate(BaseModel):
+    name: Optional[str] = None
+    generic_name: Optional[str] = None
+    category: Optional[str] = None
+    manufacturer: Optional[str] = None
+    price: Optional[float] = None
+    stock: Optional[int] = None
+    description: Optional[str] = None
+    requires_prescription: Optional[bool] = None
+
+
+class ChatStart(BaseModel):
+    chat_type: str  # symptom | device_fault
+    title: Optional[str] = None
+
+
+class ChatMessage(BaseModel):
+    text: str
+
+
+class SubscribeRequest(BaseModel):
+    plan: str  # featured_monthly | featured_yearly
+    mock_card_number: Optional[str] = None  # for mock payment
+
+
+class VideoRoomCreate(BaseModel):
+    appointment_id: Optional[str] = None
+    invitee_id: Optional[str] = None
+
+
+class VideoSignal(BaseModel):
+    signal_data: dict  # WebRTC offer/answer/candidate
+    target_user_id: str
+
+
+# ============= APPOINTMENTS =============
+@api_router.post("/appointments")
+async def create_appointment(appt: AppointmentCreate, current_user: User = Depends(get_current_user)):
+    """Patient books an appointment with a Doctor"""
+    if current_user.user_type != "Patient":
+        raise HTTPException(status_code=403, detail="Only patients can book appointments")
+    
+    doctor = await db.users.find_one({"user_id": appt.doctor_id, "user_type": "Doctor"}, {"_id": 0})
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    
+    appointment_id = f"appt_{uuid.uuid4().hex[:12]}"
+    appointment_doc = {
+        "appointment_id": appointment_id,
+        "doctor_id": appt.doctor_id,
+        "doctor_name": doctor["name"],
+        "patient_id": current_user.user_id,
+        "patient_name": current_user.name,
+        "scheduled_at": appt.scheduled_at,
+        "appointment_type": appt.appointment_type,
+        "status": "pending",
+        "notes": appt.notes,
+        "video_room_id": None,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.appointments.insert_one(appointment_doc)
+    appointment_doc.pop("_id", None)
+    return appointment_doc
+
+
+@api_router.get("/appointments/me")
+async def list_my_appointments(current_user: User = Depends(get_current_user)):
+    """List appointments for current user (as patient OR doctor)"""
+    query = {"$or": [
+        {"patient_id": current_user.user_id},
+        {"doctor_id": current_user.user_id}
+    ]}
+    appointments = await db.appointments.find(query, {"_id": 0}).sort("scheduled_at", -1).to_list(200)
+    return {"count": len(appointments), "appointments": appointments}
+
+
+@api_router.put("/appointments/{appointment_id}")
+async def update_appointment(
+    appointment_id: str,
+    update: AppointmentUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    """Update appointment status (Doctor confirms/completes, Patient cancels)"""
+    appt = await db.appointments.find_one({"appointment_id": appointment_id}, {"_id": 0})
+    if not appt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    if current_user.user_id not in [appt["doctor_id"], appt["patient_id"]]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    update_doc = {}
+    if update.status:
+        update_doc["status"] = update.status
+    if update.notes is not None:
+        update_doc["notes"] = update.notes
+    
+    if update_doc:
+        await db.appointments.update_one({"appointment_id": appointment_id}, {"$set": update_doc})
+    
+    appt = await db.appointments.find_one({"appointment_id": appointment_id}, {"_id": 0})
+    return appt
+
+
+@api_router.get("/appointments/doctor/{doctor_id}/booked-slots")
+async def get_doctor_booked_slots(doctor_id: str, date: str):
+    """Get booked time slots for a doctor on a specific date (YYYY-MM-DD)"""
+    # Match appointments where scheduled_at starts with the date
+    appointments = await db.appointments.find(
+        {
+            "doctor_id": doctor_id,
+            "scheduled_at": {"$regex": f"^{date}"},
+            "status": {"$in": ["pending", "confirmed"]}
+        },
+        {"_id": 0, "scheduled_at": 1, "appointment_id": 1}
+    ).to_list(100)
+    return {"date": date, "booked_slots": appointments}
+
+
+# ============= MEDICINES =============
+@api_router.post("/medicines")
+async def create_medicine(med: MedicineCreate, current_user: User = Depends(get_current_user)):
+    """Pharmacy adds a medicine to their catalog"""
+    if current_user.user_type != "Pharmacy":
+        raise HTTPException(status_code=403, detail="Only pharmacies can add medicines")
+    
+    medicine_id = f"med_{uuid.uuid4().hex[:12]}"
+    med_doc = {
+        "medicine_id": medicine_id,
+        "pharmacy_id": current_user.user_id,
+        "pharmacy_name": current_user.name,
+        "name": med.name,
+        "generic_name": med.generic_name,
+        "category": med.category,
+        "manufacturer": med.manufacturer,
+        "price": med.price,
+        "stock": med.stock,
+        "description": med.description,
+        "requires_prescription": med.requires_prescription,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.medicines.insert_one(med_doc)
+    med_doc.pop("_id", None)
+    return med_doc
+
+
+@api_router.get("/medicines")
+async def search_medicines(
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    pharmacy_id: Optional[str] = None,
+    limit: int = 50
+):
+    """Search medicines by name/category/pharmacy. Public endpoint."""
+    query = {}
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"generic_name": {"$regex": search, "$options": "i"}}
+        ]
+    if category:
+        query["category"] = category
+    if pharmacy_id:
+        query["pharmacy_id"] = pharmacy_id
+    
+    medicines = await db.medicines.find(query, {"_id": 0}).limit(limit).to_list(limit)
+    return {"count": len(medicines), "medicines": medicines}
+
+
+@api_router.put("/medicines/{medicine_id}")
+async def update_medicine(
+    medicine_id: str,
+    update: MedicineUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    """Update medicine (only the owning pharmacy)"""
+    med = await db.medicines.find_one({"medicine_id": medicine_id}, {"_id": 0})
+    if not med:
+        raise HTTPException(status_code=404, detail="Medicine not found")
+    if med["pharmacy_id"] != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Not your medicine")
+    
+    update_doc = update.model_dump(exclude_none=True)
+    if update_doc:
+        await db.medicines.update_one({"medicine_id": medicine_id}, {"$set": update_doc})
+    
+    med = await db.medicines.find_one({"medicine_id": medicine_id}, {"_id": 0})
+    return med
+
+
+@api_router.delete("/medicines/{medicine_id}")
+async def delete_medicine(medicine_id: str, current_user: User = Depends(get_current_user)):
+    """Delete medicine (only owning pharmacy)"""
+    med = await db.medicines.find_one({"medicine_id": medicine_id}, {"_id": 0})
+    if not med:
+        raise HTTPException(status_code=404, detail="Medicine not found")
+    if med["pharmacy_id"] != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Not your medicine")
+    
+    await db.medicines.delete_one({"medicine_id": medicine_id})
+    return {"message": "Medicine deleted"}
+
+
+# ============= AI CHAT (Symptom Checker + Device Fault Assistant) =============
+@api_router.post("/chat/start")
+async def start_chat(req: ChatStart, current_user: User = Depends(get_current_user)):
+    """Start a new AI chat session. type: 'symptom' or 'device_fault'"""
+    if req.chat_type not in ["symptom", "device_fault"]:
+        raise HTTPException(status_code=400, detail="chat_type must be 'symptom' or 'device_fault'")
+    
+    session_id = f"chat_{uuid.uuid4().hex[:12]}"
+    session_doc = {
+        "session_id": session_id,
+        "user_id": current_user.user_id,
+        "chat_type": req.chat_type,
+        "title": req.title or ("Symptom Check" if req.chat_type == "symptom" else "Device Fault"),
+        "messages": [],
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.chat_sessions.insert_one(session_doc)
+    session_doc.pop("_id", None)
+    return session_doc
+
+
+SYSTEM_PROMPTS = {
+    "symptom": (
+        "You are a helpful medical assistant for the Afghan Health Portal. "
+        "Help users understand their symptoms in plain language. "
+        "ALWAYS recommend consulting a real doctor for diagnosis. "
+        "Never prescribe medication. Ask clarifying questions about duration, severity, and associated symptoms. "
+        "Respond in the user's language (English, Farsi/Dari, or Pashto)."
+    ),
+    "device_fault": (
+        "You are an expert biomedical engineering assistant. Help hospital staff write clear, "
+        "structured fault descriptions for medical devices (MRI, X-Ray, Ventilators, ECG, etc.) "
+        "before contacting a biomedical engineer. Ask about: device model, error codes, when the issue started, "
+        "what was being done when it failed, and any unusual sounds/lights. Produce a final structured summary. "
+        "Respond in the user's language."
+    ),
+}
+
+
+@api_router.post("/chat/{session_id}/message")
+async def send_chat_message(
+    session_id: str,
+    message: ChatMessage,
+    current_user: User = Depends(get_current_user)
+):
+    """Send a message to AI chat. Returns AI response."""
+    session = await db.chat_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    if session["user_id"] != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Not your chat session")
+    
+    if len(message.text) > 4000:
+        raise HTTPException(status_code=400, detail="Message too long (max 4000 chars)")
+    
+    try:
+        system_prompt = SYSTEM_PROMPTS.get(session["chat_type"], SYSTEM_PROMPTS["symptom"])
+        
+        chat = LlmChat(
+            api_key=os.environ.get('EMERGENT_LLM_KEY'),
+            session_id=session_id,
+            system_message=system_prompt
+        ).with_model("gemini", "gemini-3.1-pro-preview")
+        
+        user_msg = UserMessage(text=message.text)
+        ai_response = await chat.send_message(user_msg)
+        
+        # Store both messages
+        now = datetime.now(timezone.utc).isoformat()
+        new_messages = [
+            {"role": "user", "content": message.text, "timestamp": now},
+            {"role": "assistant", "content": ai_response, "timestamp": now}
+        ]
+        
+        await db.chat_sessions.update_one(
+            {"session_id": session_id},
+            {"$push": {"messages": {"$each": new_messages}}}
+        )
+        
+        return {"response": ai_response, "session_id": session_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI chat failed: {str(e)}")
+
+
+@api_router.get("/chat/me")
+async def list_my_chats(current_user: User = Depends(get_current_user)):
+    """List current user's chat sessions"""
+    sessions = await db.chat_sessions.find(
+        {"user_id": current_user.user_id},
+        {"_id": 0, "messages": 0}  # exclude full messages for list view
+    ).sort("created_at", -1).to_list(50)
+    return {"count": len(sessions), "sessions": sessions}
+
+
+@api_router.get("/chat/{session_id}")
+async def get_chat(session_id: str, current_user: User = Depends(get_current_user)):
+    """Get full chat session with messages"""
+    session = await db.chat_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    if session["user_id"] != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Not your chat session")
+    return session
+
+
+# ============= SUBSCRIPTIONS (Mock Payment) =============
+SUBSCRIPTION_PLANS = {
+    "featured_monthly": {"price_usd": 9.99, "duration_days": 30, "name": "Featured Monthly"},
+    "featured_yearly": {"price_usd": 99.99, "duration_days": 365, "name": "Featured Yearly"},
+}
+
+
+@api_router.get("/subscriptions/plans")
+async def get_plans():
+    """List available subscription plans"""
+    return {"plans": SUBSCRIPTION_PLANS}
+
+
+@api_router.post("/subscriptions/subscribe")
+async def subscribe(req: SubscribeRequest, current_user: User = Depends(get_current_user)):
+    """Mock subscribe - instant success. Marks user as verified + featured."""
+    if current_user.user_type not in ["Pharmacy", "Biomedical Engineer", "Doctor"]:
+        raise HTTPException(status_code=403, detail="Only pharmacies, engineers, and doctors can subscribe")
+    
+    plan = SUBSCRIPTION_PLANS.get(req.plan)
+    if not plan:
+        raise HTTPException(status_code=400, detail="Invalid plan")
+    
+    started_at = datetime.now(timezone.utc)
+    expires_at = started_at + timedelta(days=plan["duration_days"])
+    
+    subscription_doc = {
+        "subscription_id": f"sub_{uuid.uuid4().hex[:12]}",
+        "user_id": current_user.user_id,
+        "plan": req.plan,
+        "plan_name": plan["name"],
+        "price_paid": plan["price_usd"],
+        "started_at": started_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "is_active": True,
+        "payment_method": "mock_card",
+        "mock_card_last4": (req.mock_card_number or "4242")[-4:],
+        "created_at": started_at.isoformat()
+    }
+    
+    # Deactivate any prior active subscription
+    await db.subscriptions.update_many(
+        {"user_id": current_user.user_id, "is_active": True},
+        {"$set": {"is_active": False}}
+    )
+    await db.subscriptions.insert_one(subscription_doc)
+    
+    # Mark user as verified + featured
+    await db.users.update_one(
+        {"user_id": current_user.user_id},
+        {"$set": {
+            "is_verified": True,
+            "is_featured": True,
+            "featured_until": expires_at.isoformat()
+        }}
+    )
+    
+    subscription_doc.pop("_id", None)
+    return {"subscription": subscription_doc, "message": "Mock payment successful! You are now Verified & Featured."}
+
+
+@api_router.get("/subscriptions/me")
+async def my_subscription(current_user: User = Depends(get_current_user)):
+    """Get current user's active subscription"""
+    sub = await db.subscriptions.find_one(
+        {"user_id": current_user.user_id, "is_active": True},
+        {"_id": 0}
+    )
+    return sub or {"message": "No active subscription"}
+
+
+@api_router.post("/subscriptions/cancel")
+async def cancel_subscription(current_user: User = Depends(get_current_user)):
+    """Cancel active subscription"""
+    await db.subscriptions.update_many(
+        {"user_id": current_user.user_id, "is_active": True},
+        {"$set": {"is_active": False}}
+    )
+    await db.users.update_one(
+        {"user_id": current_user.user_id},
+        {"$set": {"is_verified": False, "is_featured": False}}
+    )
+    return {"message": "Subscription cancelled"}
+
+
+# ============= VIDEO ROOMS (WebRTC Signaling) =============
+@api_router.post("/video/rooms")
+async def create_video_room(req: VideoRoomCreate, current_user: User = Depends(get_current_user)):
+    """Create a video room (optionally linked to an appointment)"""
+    room_id = f"room_{uuid.uuid4().hex[:12]}"
+    room_doc = {
+        "room_id": room_id,
+        "host_id": current_user.user_id,
+        "host_name": current_user.name,
+        "invitee_id": req.invitee_id,
+        "appointment_id": req.appointment_id,
+        "participants": [current_user.user_id],
+        "signals": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "is_active": True
+    }
+    await db.video_rooms.insert_one(room_doc)
+    
+    # Link to appointment if provided
+    if req.appointment_id:
+        await db.appointments.update_one(
+            {"appointment_id": req.appointment_id},
+            {"$set": {"video_room_id": room_id}}
+        )
+    
+    room_doc.pop("_id", None)
+    return room_doc
+
+
+@api_router.post("/video/rooms/{room_id}/join")
+async def join_video_room(room_id: str, current_user: User = Depends(get_current_user)):
+    """Join an existing video room"""
+    room = await db.video_rooms.find_one({"room_id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    if not room.get("is_active"):
+        raise HTTPException(status_code=400, detail="Room is closed")
+    
+    if current_user.user_id not in room["participants"]:
+        await db.video_rooms.update_one(
+            {"room_id": room_id},
+            {"$addToSet": {"participants": current_user.user_id}}
+        )
+    
+    room = await db.video_rooms.find_one({"room_id": room_id}, {"_id": 0})
+    return room
+
+
+@api_router.post("/video/rooms/{room_id}/signal")
+async def send_signal(
+    room_id: str,
+    signal: VideoSignal,
+    current_user: User = Depends(get_current_user)
+):
+    """Exchange WebRTC signaling data (offer/answer/ice candidates)"""
+    room = await db.video_rooms.find_one({"room_id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    if current_user.user_id not in room["participants"]:
+        raise HTTPException(status_code=403, detail="Not a participant")
+    
+    signal_doc = {
+        "signal_id": f"sig_{uuid.uuid4().hex[:8]}",
+        "from_user_id": current_user.user_id,
+        "target_user_id": signal.target_user_id,
+        "signal_data": signal.signal_data,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.video_rooms.update_one(
+        {"room_id": room_id},
+        {"$push": {"signals": signal_doc}}
+    )
+    return {"message": "Signal sent", "signal_id": signal_doc["signal_id"]}
+
+
+@api_router.get("/video/rooms/{room_id}/signals")
+async def poll_signals(
+    room_id: str,
+    since: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Poll for new signals targeted to current user (since timestamp)"""
+    room = await db.video_rooms.find_one({"room_id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    
+    signals = room.get("signals", [])
+    # Filter signals targeted to current user
+    my_signals = [s for s in signals if s["target_user_id"] == current_user.user_id]
+    
+    if since:
+        my_signals = [s for s in my_signals if s["timestamp"] > since]
+    
+    return {"signals": my_signals}
+
+
+@api_router.post("/video/rooms/{room_id}/close")
+async def close_video_room(room_id: str, current_user: User = Depends(get_current_user)):
+    """End a video call"""
+    room = await db.video_rooms.find_one({"room_id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    if room["host_id"] != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Only host can close room")
+    
+    await db.video_rooms.update_one(
+        {"room_id": room_id},
+        {"$set": {"is_active": False, "closed_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"message": "Room closed"}
+
+
+# ============= PUBLIC PHARMACIES LISTING =============
+@api_router.get("/pharmacies/all")
+async def list_pharmacies(only_24_7: bool = False, only_featured: bool = False):
+    """List all pharmacies with their location for map display"""
+    query = {"user_type": "Pharmacy"}
+    if only_24_7:
+        query["profile_data.is_24_7"] = True
+    if only_featured:
+        query["is_featured"] = True
+    
+    pharmacies = await db.users.find(query, {"_id": 0, "password": 0, "email": 0}).to_list(500)
+    
+    # Enrich with location
+    results = []
+    for pharm in pharmacies:
+        loc = await db.locations.find_one({"user_id": pharm["user_id"]}, {"_id": 0})
+        if loc:
+            results.append({**pharm, "location": loc})
+    
+    return {"count": len(results), "pharmacies": results}
+
+
 # ============= BASIC ROUTES =============
 @api_router.get("/")
 async def root():

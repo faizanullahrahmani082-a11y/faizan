@@ -1,0 +1,57 @@
+{
+  "summary": "Phase 3 backend testing complete. Created /app/backend/tests/test_phase3_appointments_medicines_chat_subs_video.py with 47 tests covering Appointments (10), Medicines (9), AI Chat with real Gemini 3.1 Pro via emergentintegrations (10), Subscriptions/mock payment (7), Video rooms + WebRTC signaling (8), and public Pharmacies listing (3). All 47 Phase 3 tests pass. Combined with prior iterations: 99/99 backend tests passing (20 auth+translate + 32 phase2 + 47 phase3). One real backend bug surfaced during testing: /api/auth/me does not expose is_verified/is_featured/featured_until — the User pydantic model has extra='ignore' and these fields are absent from the model definition, so badges set by subscription cannot be read via /auth/me (frontend will need /pharmacies/all or a model fix).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/auth/me", "issue": "Does NOT return is_verified, is_featured, featured_until despite these being set in DB by /subscriptions/subscribe. Caused by User pydantic model (server.py L41-50) not declaring these fields + extra='ignore'. Frontend cannot show user's own badge state via /auth/me. Workaround used in tests: read /pharmacies/all to confirm badges. Add fields to User model OR return raw user_doc dict."},
+      {"endpoint": "POST /api/appointments", "issue": "No double-booking prevention. Patient can create multiple pending/confirmed appointments for the same doctor+scheduled_at. /booked-slots is read-only — backend should reject overlapping bookings (409 Conflict)."},
+      {"endpoint": "POST /api/appointments", "issue": "scheduled_at is accepted as any string (no ISO datetime validation, no future-date check). Past dates and malformed strings (e.g. 'tomorrow') are accepted."},
+      {"endpoint": "POST /api/video/rooms/{id}/signal", "issue": "target_user_id is not validated against room participants. A participant can target a user_id that never joined; the signal is stored but never consumed (memory leak)."},
+      {"endpoint": "GET /api/video/rooms/{id}/signals", "issue": "Signals are never ack'd/removed. The 'signals' array on the room doc grows unbounded across a long call. Add server-side cleanup of consumed signals, or TTL."},
+      {"endpoint": "POST /api/chat/{session_id}/message", "issue": "Returns 500 with raw exception text on any LLM failure (line 936: 'AI chat failed: {str(e)}'). Should return 502/503 and avoid leaking internal error details/keys."},
+      {"endpoint": "POST /api/subscriptions/subscribe", "issue": "No validation on mock_card_number (length/digits). Currently any string is accepted and last 4 chars stored verbatim — e.g. mock_card_number='abc' is accepted."},
+      {"endpoint": "POST /api/subscriptions/cancel", "issue": "Returns 200 even if user has no active subscription (silent no-op). Consider 404 or include count of cancelled subs in response."},
+      {"endpoint": "GET /api/pharmacies/all", "issue": "N+1 query: loops over pharmacies and issues one db.locations.find_one per row. Should use aggregation $lookup. Also excludes pharmacies without a location row entirely (silent filter)."},
+      {"endpoint": "DELETE /api/medicines/{id}", "issue": "Hard delete with no audit trail. Consider soft-delete (deleted_at) for compliance."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase3_appointments_medicines_chat_subs_video.py",
+    "/app/backend/tests/test_phase2_profile_location_reviews.py",
+    "/app/backend/tests/test_auth_and_translate.py",
+    "/app/test_reports/pytest/phase3_results.xml",
+    "/app/test_reports/pytest/full_results.xml"
+  ],
+  "action_items": [
+    "(HIGH) Add is_verified, is_featured, featured_until (and is_24_7 if needed) to User pydantic model (server.py L41), OR have /auth/me bypass the model and return user_doc dict. Otherwise frontend cannot show the logged-in user their own verified/featured badge state.",
+    "(MEDIUM) Prevent double-booking in POST /appointments: reject if {doctor_id, scheduled_at, status in [pending,confirmed]} already exists (409).",
+    "(MEDIUM) Validate scheduled_at as ISO datetime and require it to be in the future.",
+    "(MEDIUM) Validate signal.target_user_id is in room.participants in POST /video/rooms/{id}/signal.",
+    "(LOW) Don't leak raw LLM exception text from /chat/{id}/message; map to 502 with generic message.",
+    "(LOW) Bound the signals array (TTL/cleanup) to avoid unbounded growth on long calls.",
+    "(LOW) Use $lookup aggregation in /pharmacies/all instead of N+1 per-pharmacy find."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1207 lines — exceeds the 700-line guideline. Split into routers/ submodules (appointments.py, medicines.py, chat.py, subscriptions.py, video.py, auth.py).",
+    "User pydantic model with extra='ignore' silently drops DB fields (is_verified, is_featured, etc.) — easy to miss. Either keep DB-fields in the model or use a dedicated UserPublic response model and never round-trip through User for response shaping.",
+    "Subscription endpoints DO toggle user.is_verified/is_featured but there is no scheduled job to clear them at featured_until expiry. A pharmacy keeps badges forever after expiry until they manually cancel.",
+    "SUBSCRIPTION_PLANS is a module-level constant (good), but /subscriptions/subscribe trusts client-provided 'plan' value only via dict lookup — fine. However mock_card_number isn't validated as numeric/length 13-19. Add Pydantic Field(min_length=13, max_length=19, pattern=r'^\\d+$') if it's to look real.",
+    "AI chat uses LlmChat with session_id=session_id — emergentintegrations is expected to maintain history internally per session_id. Worth verifying it actually loads prior messages from its own store (otherwise multi-turn context is lost across requests).",
+    "/video/rooms/{id}/signals uses HTTP polling (per requirement) but does not delete consumed signals. A 30-min call at 1 ICE candidate/sec = 1800 unbounded items pushed to the same Mongo doc.",
+    "/chat/{session_id}/message — message persistence and AI call are not atomic. If DB update fails after the LLM returns, the response is lost.",
+    "No pagination anywhere: /appointments/me (.to_list(200)), /medicines (.limit(50) hardcoded ceiling), /chat/me (.to_list(50)), /pharmacies/all (.to_list(500)). Add skip/limit + total count.",
+    "/medicines (public) does not filter out medicines whose owning pharmacy is deleted/closed.",
+    "CORS_ORIGINS default '*' with allow_credentials=True will be rejected by browsers; set proper origins for production."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase3_appointments_medicines_chat_subs_video.py (new, 47 tests, all pass)"
+  ],
+  "success_rate": {"backend": "100% (47/47 phase3, 99/99 combined)", "frontend": "skipped per request"},
+  "test_credentials": "doctor@test.com/Doctor123! (Doctor), patient@test.com/Patient123! (Patient), pharmacy@test.com/Pharmacy123! (Pharmacy), engineer@test.com/Engineer123! (Biomedical Engineer). All idempotent on re-run.",
+  "seed_data_creation": "Test creates: 2 appointments (one cancelled, one with linked video room), 1 medicine then deletes it, 2+ AI chat sessions (incl. one with real Gemini 3.1 Pro round-trip), 2 active->cancelled subscriptions (pharmacy + engineer), 2 video rooms. A second throwaway pharmacy is registered each run with a uuid-suffixed email — these accumulate but are harmless.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 3 endpoints all verified working end-to-end including a REAL Gemini 3.1 Pro call via emergentintegrations LlmChat (gemini-3.1-pro-preview) — EMERGENT_LLM_KEY in backend/.env is valid. Mock payment in /subscriptions/subscribe instantly succeeds and DOES toggle user.is_verified/is_featured in DB (verified via /pharmacies/all since /auth/me hides them — this is the one real bug found). Video signaling uses HTTP polling on /video/rooms/{id}/signals with 'since' filter; signals targeted only to current user are returned. /pharmacies/all requires the pharmacy to have a /location row (silently filters out those without). Test file uses a module-scoped 'state' dict fixture instead of pytest.X attributes (pytest 9.0.3 doesn't reliably preserve module attrs across classes). Combined regression: 99/99 pass in ~65s.",
+  "rca_of_the_issue": "Bug: /api/auth/me missing is_verified/is_featured. Root cause: server.py L41-50 defines class User(BaseModel) with extra='ignore' and does NOT declare is_verified/is_featured/featured_until. get_current_user constructs User(**user_doc) which silently drops those keys. The endpoint then returns the pydantic instance (serialized via FastAPI). Fix: either (a) add the three fields as Optional[bool/str]=None on the User model, or (b) change /auth/me to fetch and return the raw user_doc dict (excluding password and _id). Option (a) is preferred since the same User object flows through many endpoints. Reproduction: subscribe as pharmacy -> GET /auth/me -> response lacks is_verified/is_featured (None/missing). Verified via /pharmacies/all: same user_doc DOES contain is_verified=true, is_featured=true."
+}
