@@ -1662,9 +1662,10 @@ async def commission_summary(current_user: User = Depends(get_current_user)):
             "status": "completed",
             "appointment_type": "video"
         })
-        # Read consultation fee from doctor's profile (fallback: $30)
+        # Read consultation fee from doctor's profile (fallback: $30 only if unset)
         doc = await db.users.find_one({"user_id": current_user.user_id}, {"_id": 0, "profile_data": 1})
-        consultation_fee = float((doc or {}).get("profile_data", {}).get("consultation_fee") or 30)
+        fee_raw = (doc or {}).get("profile_data", {}).get("consultation_fee")
+        consultation_fee = float(fee_raw) if fee_raw is not None else 30.0
         gmv = completed * consultation_fee
         commission_rate = COMMISSION_RATES["consultation"]
         commission = round(gmv * commission_rate, 2)
@@ -1762,7 +1763,8 @@ async def generate_doctor_report(user_id: str, year: int, month: int) -> dict:
     })
     
     doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "profile_data": 1})
-    consultation_fee = float((doc or {}).get("profile_data", {}).get("consultation_fee") or 30)
+    fee_raw = (doc or {}).get("profile_data", {}).get("consultation_fee")
+    consultation_fee = float(fee_raw) if fee_raw is not None else 30.0
     gmv = completed * consultation_fee
     commission = round(gmv * COMMISSION_RATES["consultation"], 2)
     

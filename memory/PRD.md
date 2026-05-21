@@ -1,7 +1,7 @@
 # Afghan Health Portal - PRD
 
 ## Original Problem Statement
-3-language (Pashto, Farsi/Dari, English) health application for Doctor/Patient/Pharmacy/Biomedical Engineer with profile, GPS, reviews, appointments, medicines, AI assistant, maps, video calls, premium subscriptions, file uploads, notifications, doctor scheduling, medicine orders, and commission tracking.
+3-language (Pashto, Farsi/Dari, English) health application for Doctor/Patient/Pharmacy/Biomedical Engineer with full feature set: profile + GPS + reviews + appointments + medicines + AI assistant + maps + video calls + premium subscriptions + file uploads + notifications + doctor scheduling + medicine orders + commission tracking + monthly performance reports.
 
 ## Tech Stack
 - **Backend**: FastAPI + Motor (MongoDB), JWT + Google OAuth, emergentintegrations (Gemini 3.1 Pro), Emergent Object Storage
@@ -10,49 +10,53 @@
 
 ## Implementation Status
 
-### ✅ Phase 1 — Auth & Multilingual UI (20/20 tests)
-### ✅ Phase 2 — Database Architecture (32/32 + 20 regression)
-### ✅ Phase 3 — Core Features (47/47 + 52 regression)
-### ✅ Phase 4 (Feb 2026) — Object Storage + Schedule + Orders + Notifications + Commission
-- **Emergent Object Storage**: Profile picture & prescription uploads (5MB, image/PDF MIME)
-- **Doctor Weekly Schedule**: day_of_week + start/end time + slot duration template
-- **Medicine Orders**: full purchase flow with stock decrement, prescription validation, auto-notifications
-- **Commission Tracking**: 4% on medicine sales, 12% on doctor consultations (GMV dashboard)
-- **HTTP Polling Notifications**: bell icon + unread count + auto-generated on order/appointment events
-- **Profile Picture**: Avatar with upload UI in dashboard
-- **Doctor Appointment Completion**: Doctor-only status='completed' (powers consultation GMV)
-- **Prescription File Access Control**: Owner + linked pharmacy can view (PHI privacy)
-- **48/48 Phase 4 + 147/147 combined regression = 100%**
+### ✅ Phase 1 — Auth & Multilingual UI (20/20)
+### ✅ Phase 2 — Database Architecture (52/52)
+### ✅ Phase 3 — Core Features (99/99)
+### ✅ Phase 4 — Object Storage + Schedule + Orders + Notifications + Commission (147/147)
+### ✅ Phase 5 (Feb 2026) — Atomic Stock + Custom Fees + Monthly Reports
+- **Atomic stock decrement** in POST /orders via `find_one_and_update` with stock filter (verified by 2-thread concurrent race test on stock=1)
+- **Stock restoration** on order cancellation (both patient + pharmacy initiated)
+- **Order state guards**: patient can only cancel pending; cannot reopen cancelled/delivered
+- **Custom consultation_fee** on Doctor profile_data — handles 0.0 (charity) correctly
+- **Monthly Performance Reports**:
+  - Pharmacy: total_orders, gmv, commission, payout, top 5 medicines, cancelled count
+  - Doctor: completed_consultations, gmv, avg_rating, total_reviews
+  - Engineer: avg_rating, total_reviews
+  - Defaults to previous month; specific year/month supported
+- **Mock Resend Email**: POST /reports/monthly/send saves to db.monthly_reports + creates notification + logs (delivery_status='SIMULATED_SENT')
+- **23/23 Phase 5 + 170/170 combined regression = 100%**
 
-## MongoDB Collections (10 total)
+## MongoDB Collections (12 total)
 | Collection | Purpose |
 |------------|---------|
-| `users` | Accounts + role-specific profile_data + is_verified/is_featured |
+| `users` | Accounts with role-specific profile_data (incl. consultation_fee for Doctor) |
 | `user_sessions` | Google OAuth sessions |
 | `locations` | GeoJSON GPS |
 | `reviews` | Ratings + tags |
-| `appointments` | Bookings (now with 'completed' status) |
-| `medicines` | Pharmacy catalog |
+| `appointments` | Bookings with 'completed' status (powers Doctor GMV) |
+| `medicines` | Pharmacy catalog (atomic stock) |
 | `chat_sessions` | AI chat history |
-| `subscriptions` | Premium memberships |
+| `subscriptions` | Premium memberships (MOCK payment) |
 | `video_rooms` | WebRTC signaling |
-| `files` | Object Storage references |
+| `files` | Emergent Object Storage references |
 | `schedules` | Doctor weekly templates |
-| `orders` | Medicine orders + commission |
-| `notifications` | Polling-based notifications |
+| `orders` | Medicine orders + commission (atomic, with stock restoration) |
+| `notifications` | HTTP-poll notifications |
+| `monthly_reports` | Generated/sent reports (Resend simulated) |
 
-## API Endpoints (Phase 4 additions)
-- **Files**: POST `/upload`, GET `/files/{id}` (Bearer or `?auth=token`), DELETE `/files/{id}`
-- **Schedule**: PUT `/schedule`, GET `/schedule/me`, GET `/schedule/{doctor_id}`
-- **Orders**: POST `/orders`, GET `/orders/me`, PUT `/orders/{id}`
-- **Notifications**: GET `/notifications` (poll), PUT `/notifications/{id}/read`, PUT `/notifications/read-all`
-- **Commission**: GET `/commission/summary` (role-aware GMV)
-- **Appointments**: PUT `/appointments/{id}` with `status='completed'` (doctor-only)
+## Commission & GMV Model (Investor Deck)
+| Type | Rate | Source |
+|------|------|--------|
+| Medicine sale | 4% | Pharmacy orders (subtotal) |
+| Consultation | 12% | Doctor completed video appointments × consultation_fee |
 
-## Commission/GMV Model (Investor Deck)
-- **Medicine sales**: 4% platform commission
-- **Doctor video consultations**: 12% platform commission ($30/consultation default)
-- **GMV Dashboard**: real-time per-user view of total sales, payout, and commission
+GMV dashboard: real-time per-user view. Monthly reports auto-aggregate.
+
+## API Endpoints (Phase 5 additions)
+- **Reports**: GET `/reports/monthly` (current/previous month), GET `/reports/monthly?year=&month=`, POST `/reports/monthly/send`, GET `/reports/me`
+- **Atomic stock**: POST `/orders` (find_one_and_update with stock>=qty filter)
+- **Stock restore**: PUT `/orders/{id}` (status=cancelled → $inc stock)
 
 ## Test Credentials (`/app/memory/test_credentials.md`)
 - doctor@test.com / Doctor123!
@@ -62,32 +66,31 @@
 
 ## Prioritized Backlog
 
-### P0 (Next Sprint)
-- [ ] Atomic stock decrement (race condition prevention)
-- [ ] Real Stripe payment to replace mock subscription
-- [ ] Doctor consultation_fee field on profile (replace $30 hardcode)
-- [ ] Restore stock when orders cancelled
-- [ ] Order status state-machine validation
+### P0 (Operational Hardening)
+- [ ] Real Stripe integration to replace mock payment
+- [ ] Order state-machine: disallow pending→delivered forward jumps
+- [ ] De-duplicate monthly send by (user_id, period) upsert OR 1/day rate-limit
+- [ ] HTML-escape user values in simulated email template (XSS in mock)
 
-### P1
-- [ ] Migrate video signaling from HTTP polling to WebSocket
+### P1 (Polish)
+- [ ] Migrate video signaling: HTTP polling → WebSocket
+- [ ] Pharmacy top_medicines: group by medicine_id (not name, for rename-safety)
+- [ ] Query validators on /reports (year>=2024, 1<=month<=12)
+- [ ] Doctor revenue recognition: completed_at vs created_at (PM decision)
 - [ ] Admin platform-wide GMV dashboard
-- [ ] Doctor profile search by language preference
-- [ ] FCM push notifications (browser/mobile)
-- [ ] File upload: magic-byte content sniffing + streaming size limit
-- [ ] Commission rates in `platform_config` collection (not hardcoded)
+- [ ] FCM push notifications (mobile/browser)
 
 ### P2 (Tech Debt)
-- [ ] Split server.py (1700+ lines) into routers/ submodules
-- [ ] Pagination across all list endpoints
+- [ ] Split server.py (~1965 lines) into routers/ submodules (auth, profile, orders, reports, etc.)
+- [ ] Extract `_month_window(y, m)` helper (3 duplicate copies in report gens)
+- [ ] Pagination across list endpoints
 - [ ] TTL index on notifications (90-day cleanup)
 - [ ] Cron to expire `is_featured` at `featured_until`
 - [ ] $lookup aggregation in /pharmacies/all
-- [ ] CORS_ORIGINS hardening (no '*' with credentials)
 
-## Known Minor Issues (Non-blocking)
-- Stock decrement not atomic (race condition possible)
-- Notification array grows unboundedly (need TTL)
-- File size checked AFTER full read (DoS surface)
-- Order status transitions not state-machine validated
-- Cancelled orders don't restore stock
+## Known Minor Issues (Non-blocking, documented in iteration_5.json)
+- Order status state-machine not enforced (pending→delivered jump allowed)
+- Monthly send not deduped (spam-induced growth possible)
+- top_medicines grouped by name (rename-unsafe)
+- Email HTML not escaped (mock only — no XSS surface in production until Resend wired)
+- Doctor revenue uses created_at (booking) not completion timestamp

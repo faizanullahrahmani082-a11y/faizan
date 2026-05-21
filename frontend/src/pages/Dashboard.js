@@ -83,6 +83,7 @@ const Dashboard = () => {
   const showAI = true;
   const showSchedule = userType === 'Doctor';
   const showOrders = ['Patient', 'Pharmacy'].includes(userType);
+  const showReports = ['Doctor', 'Pharmacy', 'Biomedical Engineer'].includes(userType);
 
   const handleProfilePictureUpdate = (newUrl) => {
     setUser({ ...user, picture: newUrl });
