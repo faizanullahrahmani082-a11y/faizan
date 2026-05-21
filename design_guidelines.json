@@ -1,0 +1,110 @@
+{
+  "project_context": {
+    "domain": "Healthcare / SaaS Medical App",
+    "theme": "Light Mode (Primary) with Dark Mode Toggle",
+    "archetype": "Archetype 1: Organic & Earthy (Refined for Premium Medical Context)",
+    "primary_objective": "Modern, clean, and highly trustworthy login/registration screen supporting multi-language (English, Dari, Pashto) with seamless RTL/LTR switching and role-based entry."
+  },
+  "typography": {
+    "rules": "DO NOT use Inter or Roboto. Follow E1's premium typography rule.",
+    "fonts": {
+      "ltr_primary": "Outfit",
+      "rtl_primary": "Vazirmatn",
+      "fallback": "sans-serif"
+    },
+    "hierarchy": {
+      "h1": "text-4xl tracking-tight font-semibold",
+      "h2": "text-2xl tracking-tight font-medium",
+      "body": "text-base leading-relaxed",
+      "labels": "text-sm font-medium tracking-wide uppercase",
+      "small": "text-xs text-muted-foreground"
+    },
+    "instructions": "Dynamically switch font-family on the <body> or main container based on the selected language: 'Outfit' for English, 'Vazirmatn' for Dari/Pashto."
+  },
+  "color_palette": {
+    "primary": {
+      "name": "Medical Teal",
+      "light": "#0F766E",
+      "dark": "#14B8A6",
+      "tailwind": "teal-700 (light) / teal-500 (dark)",
+      "usage": "Primary CTA buttons, active states, active user-type card borders"
+    },
+    "secondary": {
+      "name": "Active Emerald",
+      "light": "#10B981",
+      "dark": "#059669",
+      "tailwind": "emerald-500",
+      "usage": "Success states, 'Open Pharmacy' indicators, verified badges"
+    },
+    "accent": {
+      "name": "Urgent Coral",
+      "light": "#F97316",
+      "dark": "#EA580C",
+      "tailwind": "orange-500",
+      "usage": "Emergency alerts, biomedical service calls, destructive/urgent actions"
+    },
+    "background": {
+      "light": "#F8FAFC",
+      "dark": "#0F172A",
+      "tailwind": "slate-50 (light) / slate-900 (dark)"
+    },
+    "surface": {
+      "light": "#FFFFFF",
+      "dark": "#1E293B",
+      "tailwind": "white (light) / slate-800 (dark)"
+    },
+    "text": {
+      "light_mode": "text-slate-900",
+      "dark_mode": "text-slate-50",
+      "muted": "text-slate-500 (light) / text-slate-400 (dark)"
+    }
+  },
+  "layout_and_spacing": {
+    "strategy": "Split-screen layout (Bento Grid influence for desktop). Left: Form container. Right: Feature Image.",
+    "spacing_scale": "Generous spacing. Use p-8 for cards, gap-6 for forms, py-12 for sections.",
+    "rtl_logical_properties": "CRITICAL: You MUST use Tailwind's logical properties for margins, paddings, and positioning to natively support RTL without duplicating classes. Use `ms-` (margin-start), `me-`, `ps-`, `pe-`, `text-start`, `text-end` instead of left/right specific classes (ml-, mr-, pl-, pr-, text-left, text-right).",
+    "surface_style": "Premium Medical: Subtle rounded corners (max 12px / rounded-xl). 1px solid borders (border-slate-200/border-slate-700) instead of heavy shadows."
+  },
+  "multilingual_rtl_strategy": {
+    "implementation": "Language state should control the HTML `dir` attribute (`dir='ltr'` for EN, `dir='rtl'` for FA/PS).",
+    "switcher": "A clean dropdown or toggle in the top-start corner of the screen. Show language native names (English, فارسی, پښتو)."
+  },
+  "components": {
+    "user_type_selector": {
+      "type": "2x2 Grid of Cards (Radio Group visual)",
+      "options": ["Doctor", "Patient", "Pharmacist", "Biomedical Engineer"],
+      "style": "Cards must have an icon, title, and 1px border. When selected, the border turns Primary Medical Teal with a subtle Teal background tint (bg-teal-50 / dark:bg-teal-900/20) and a checkmark icon."
+    },
+    "forms": {
+      "style": "Shadcn UI Inputs. Label must be above the input (text-start aligned). Inputs should have rounded-md, ring-primary on focus. Include email and password fields.",
+      "social_login": "A full-width button for Google Login. White background in light mode with 1px border. Icon: Use react-icons (FcGoogle) or lucide."
+    },
+    "buttons": {
+      "primary": "Solid Medical Teal background, white text. Hover state: slightly darker teal. Must have smooth transition."
+    }
+  },
+  "image_urls": [
+    {
+      "category": "hero_background",
+      "url": "https://static.prod-images.emergentagent.com/jobs/1289d8f2-99a7-4af7-a216-024d8287163f/images/8ca33d648d88e97b8541f7178182ce65f197230da84d828a031e8795e8b1a640.png",
+      "description": "Soft minimalist abstract 3d geometry in pale teal and warm sage green. To be used on the right side of the split login screen (hidden on mobile). Overlay with a subtle black/10 or white/10 layer if needed, but it's abstract enough to stand alone.",
+      "slug": "medical_abstract_bg"
+    },
+    {
+      "category": "hero_lifestyle_fallback",
+      "url": "https://static.prod-images.emergentagent.com/jobs/1289d8f2-99a7-4af7-a216-024d8287163f/images/1f239c3f7dea785cbb4d2aa5d7fa5a3637ab5d1e108efa8496fa62609f4b0613.png",
+      "description": "Authentic diverse healthcare professionals. Alternative image for the right split screen if a human touch is preferred over the abstract background.",
+      "slug": "medical_professionals_hero"
+    }
+  ],
+  "instructions_to_main_agent": [
+    "1. DO NOT use generic fonts like Inter. Import Google Fonts 'Outfit' and 'Vazirmatn' in index.css.",
+    "2. DO NOT use `ml-`, `mr-`, `pl-`, `pr-`, `text-left`, `text-right`. You MUST use Tailwind logical properties: `ms-`, `me-`, `ps-`, `pe-`, `text-start`, `text-end`. This guarantees RTL layout works automatically when `<html dir='rtl'>` is set.",
+    "3. Implement the split-screen design: Left side max-w-lg container holding the form + headers. Right side: hidden on mobile, block on lg screens, taking up remaining space with `hero_background` image covering the area (object-cover).",
+    "4. Build a clean Language Switcher component in the header using shadcn Select or DropdownMenu.",
+    "5. Include a Dark Mode toggle (sun/moon icon) using lucide-react next to the Language Switcher.",
+    "6. Build the User Type Selection as a visually engaging 2x2 grid of selectable cards before or as part of the registration form.",
+    "7. All interactive elements (buttons, inputs, language switcher) MUST have `data-testid` attributes (e.g., `data-testid='login-submit-btn'`).",
+    "8. DO NOT hardcode translations, build a simple dictionary object for English, Farsi, and Pashto strings and map them to the UI."
+  ]
+}
