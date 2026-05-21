@@ -15,6 +15,8 @@ from jose import JWTError, jwt
 import httpx
 import requests
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import base64
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -30,6 +32,81 @@ security = HTTPBearer(auto_error=False)
 JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 7
+
+# AES-256-GCM encryption for PHI/PII at rest (HIPAA/GDPR/KVKK compliance)
+ENCRYPTION_KEY = base64.b64decode(os.environ['ENCRYPTION_KEY'])
+if len(ENCRYPTION_KEY) != 32:
+    raise RuntimeError("ENCRYPTION_KEY must be a 32-byte (256-bit) base64-encoded key for AES-256")
+_aesgcm = AESGCM(ENCRYPTION_KEY)
+ENC_PREFIX = "enc-v1:"  # version marker for forward-compatibility
+
+
+def encrypt_phi(plaintext):
+    """Encrypt a string with AES-256-GCM. Returns prefixed base64 ciphertext. Idempotent: already-encrypted values pass through."""
+    if plaintext is None or plaintext == "":
+        return plaintext
+    if not isinstance(plaintext, str):
+        return plaintext
+    if plaintext.startswith(ENC_PREFIX):
+        return plaintext  # already encrypted
+    nonce = os.urandom(12)
+    ct = _aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
+    return ENC_PREFIX + base64.b64encode(nonce + ct).decode("ascii")
+
+
+def decrypt_phi(ciphertext):
+    """Decrypt AES-256-GCM ciphertext. Pass through plain strings for backward compat with legacy data."""
+    if ciphertext is None or ciphertext == "":
+        return ciphertext
+    if not isinstance(ciphertext, str) or not ciphertext.startswith(ENC_PREFIX):
+        return ciphertext  # legacy plaintext - return as-is
+    try:
+        data = base64.b64decode(ciphertext[len(ENC_PREFIX):])
+        nonce, ct = data[:12], data[12:]
+        return _aesgcm.decrypt(nonce, ct, None).decode("utf-8")
+    except Exception:
+        return "[DECRYPTION_ERROR]"
+
+
+def encrypt_list(items):
+    """Encrypt each item in a list of strings (e.g., chronic_illnesses)"""
+    if not items:
+        return items
+    return [encrypt_phi(x) if isinstance(x, str) else x for x in items]
+
+
+def decrypt_list(items):
+    if not items:
+        return items
+    return [decrypt_phi(x) if isinstance(x, str) else x for x in items]
+
+
+# PHI fields per role that need encryption at rest
+PATIENT_PHI_FIELDS = {"chronic_illnesses": "list", "blood_type": "str"}
+
+
+def encrypt_patient_profile(profile_data: dict) -> dict:
+    """Encrypt PHI fields in a Patient's profile_data"""
+    if not profile_data:
+        return profile_data
+    out = {**profile_data}
+    if "blood_type" in out and out["blood_type"]:
+        out["blood_type"] = encrypt_phi(out["blood_type"])
+    if "chronic_illnesses" in out and out["chronic_illnesses"]:
+        out["chronic_illnesses"] = encrypt_list(out["chronic_illnesses"])
+    return out
+
+
+def decrypt_patient_profile(profile_data: dict) -> dict:
+    if not profile_data:
+        return profile_data
+    out = {**profile_data}
+    if "blood_type" in out and out["blood_type"]:
+        out["blood_type"] = decrypt_phi(out["blood_type"])
+    if "chronic_illnesses" in out and out["chronic_illnesses"]:
+        out["chronic_illnesses"] = decrypt_list(out["chronic_illnesses"])
+    return out
+
 
 # Object Storage
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
@@ -416,21 +493,10 @@ def _validate_profile_data(user_type: str, profile_data: dict) -> dict:
     return profile_data
 
 
-@api_router.get("/profile")
-async def get_profile(current_user: User = Depends(get_current_user)):
-    """Get current user's full profile"""
-    user_doc = await db.users.find_one(
-        {"user_id": current_user.user_id},
-        {"_id": 0, "password": 0}
-    )
-    if not user_doc:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user_doc
-
-
 @api_router.put("/profile")
 async def update_profile(update: ProfileUpdate, current_user: User = Depends(get_current_user)):
-    """Update current user's profile (name, phone, picture, role-specific data)"""
+    """Update current user's profile (name, phone, picture, role-specific data).
+    Patient PHI (chronic_illnesses, blood_type) is encrypted at rest with AES-256-GCM."""
     update_doc = {}
     if update.name is not None:
         update_doc["name"] = update.name
@@ -441,6 +507,9 @@ async def update_profile(update: ProfileUpdate, current_user: User = Depends(get
     if update.profile_data is not None:
         # Validate role-specific fields
         validated = _validate_profile_data(current_user.user_type, update.profile_data)
+        # Encrypt PHI for patients
+        if current_user.user_type == "Patient":
+            validated = encrypt_patient_profile(validated)
         update_doc["profile_data"] = validated
     
     if update_doc:
@@ -453,6 +522,23 @@ async def update_profile(update: ProfileUpdate, current_user: User = Depends(get
         {"user_id": current_user.user_id},
         {"_id": 0, "password": 0}
     )
+    # Decrypt PHI when returning to the patient themselves
+    if user_doc.get("user_type") == "Patient":
+        user_doc["profile_data"] = decrypt_patient_profile(user_doc.get("profile_data", {}))
+    return user_doc
+
+
+@api_router.get("/profile")
+async def get_profile(current_user: User = Depends(get_current_user)):
+    """Get current user's full profile (PHI decrypted for the owner)"""
+    user_doc = await db.users.find_one(
+        {"user_id": current_user.user_id},
+        {"_id": 0, "password": 0}
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user_doc.get("user_type") == "Patient":
+        user_doc["profile_data"] = decrypt_patient_profile(user_doc.get("profile_data", {}))
     return user_doc
 
 
@@ -594,19 +680,21 @@ async def create_review(review: ReviewCreate, current_user: User = Depends(get_c
         "reviewee_id": review.reviewee_id,
         "reviewee_type": reviewee["user_type"],
         "rating": review.rating,
-        "comment": review.comment,
+        "comment": encrypt_phi(review.comment),
         "tags": review.tags or [],
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     
     await db.reviews.insert_one(review_doc)
     review_doc.pop("_id", None)
+    # Decrypt for response to author
+    review_doc["comment"] = decrypt_phi(review_doc["comment"])
     return review_doc
 
 
 @api_router.get("/reviews/user/{user_id}")
 async def get_user_reviews(user_id: str):
-    """Get all reviews for a specific user with aggregate stats"""
+    """Get all reviews for a specific user with aggregate stats (comments decrypted for display)"""
     reviews = await db.reviews.find({"reviewee_id": user_id}, {"_id": 0}).to_list(500)
     
     avg_rating = 0
@@ -618,6 +706,9 @@ async def get_user_reviews(user_id: str):
     for r in reviews:
         for tag in r.get("tags", []):
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        # Decrypt comment for display
+        if "comment" in r:
+            r["comment"] = decrypt_phi(r["comment"])
     
     return {
         "user_id": user_id,
@@ -635,7 +726,101 @@ async def get_my_reviews(current_user: User = Depends(get_current_user)):
         {"reviewer_id": current_user.user_id},
         {"_id": 0}
     ).to_list(500)
+    for r in reviews:
+        if "comment" in r:
+            r["comment"] = decrypt_phi(r["comment"])
     return {"count": len(reviews), "reviews": reviews}
+
+
+@api_router.get("/reviews/public/{user_id}")
+async def get_public_reviews(user_id: str, limit: int = 20):
+    """ANONYMIZED public reviews — no reviewer_id/name. Used on public doctor/pharmacy profiles.
+    HIPAA/GDPR/KVKK: patient identities are completely hidden in public-facing endpoints."""
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    reviews = await db.reviews.find(
+        {"reviewee_id": user_id},
+        {"_id": 0, "reviewer_id": 0, "reviewer_name": 0}  # STRIP identity
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    
+    avg_rating = 0
+    if reviews:
+        all_reviews = await db.reviews.find({"reviewee_id": user_id}, {"_id": 0, "rating": 1}).to_list(500)
+        avg_rating = sum(r["rating"] for r in all_reviews) / len(all_reviews)
+    
+    tag_counts = {}
+    for r in reviews:
+        # Decrypt comments for public display (decision: comments are written for public view)
+        if "comment" in r:
+            r["comment"] = decrypt_phi(r["comment"])
+        # Strip reviewer_type to "Anonymous"
+        r["reviewer_type"] = "Anonymous"
+        for tag in r.get("tags", []):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    
+    # Include featured quote if doctor/pharmacy has set one
+    featured_quote = None
+    fq_id = user.get("featured_quote_review_id")
+    if fq_id:
+        fq = await db.reviews.find_one(
+            {"review_id": fq_id, "reviewee_id": user_id},
+            {"_id": 0, "reviewer_id": 0, "reviewer_name": 0}
+        )
+        if fq:
+            fq["comment"] = decrypt_phi(fq.get("comment"))
+            fq["reviewer_type"] = "Anonymous"
+            featured_quote = fq
+    
+    return {
+        "user_id": user_id,
+        "user_type": user.get("user_type"),
+        "average_rating": round(avg_rating, 2),
+        "total_reviews": len(reviews),
+        "tag_counts": tag_counts,
+        "featured_quote": featured_quote,
+        "reviews": reviews
+    }
+
+
+@api_router.put("/reviews/featured-quote/{review_id}")
+async def set_featured_quote(review_id: str, current_user: User = Depends(get_current_user)):
+    """Doctor/Pharmacy picks ONE 4-5 star review to highlight as featured quote on their public profile.
+    Requires Premium subscription (is_verified=True). Social proof feature."""
+    if current_user.user_type not in ["Doctor", "Pharmacy"]:
+        raise HTTPException(status_code=403, detail="Only doctors and pharmacies can set featured quotes")
+    
+    # Premium-gated feature
+    user_doc = await db.users.find_one({"user_id": current_user.user_id}, {"_id": 0})
+    if not user_doc.get("is_verified"):
+        raise HTTPException(status_code=402, detail="Featured Quote is a Premium feature. Subscribe to unlock.")
+    
+    review = await db.reviews.find_one(
+        {"review_id": review_id, "reviewee_id": current_user.user_id},
+        {"_id": 0}
+    )
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found or not yours to feature")
+    
+    if review["rating"] < 4:
+        raise HTTPException(status_code=400, detail="Only 4-5 star reviews can be featured")
+    
+    await db.users.update_one(
+        {"user_id": current_user.user_id},
+        {"$set": {"featured_quote_review_id": review_id}}
+    )
+    return {"message": "Featured quote updated", "review_id": review_id}
+
+
+@api_router.delete("/reviews/featured-quote")
+async def clear_featured_quote(current_user: User = Depends(get_current_user)):
+    """Remove featured quote from public profile"""
+    await db.users.update_one(
+        {"user_id": current_user.user_id},
+        {"$unset": {"featured_quote_review_id": ""}}
+    )
+    return {"message": "Featured quote removed"}
 
 
 @api_router.delete("/reviews/{review_id}")
@@ -762,24 +947,27 @@ async def create_appointment(appt: AppointmentCreate, current_user: User = Depen
         "scheduled_at": appt.scheduled_at,
         "appointment_type": appt.appointment_type,
         "status": "pending",
-        "notes": appt.notes,
+        "notes": encrypt_phi(appt.notes),
         "video_room_id": None,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     
     await db.appointments.insert_one(appointment_doc)
     appointment_doc.pop("_id", None)
+    appointment_doc["notes"] = decrypt_phi(appointment_doc["notes"])
     return appointment_doc
 
 
 @api_router.get("/appointments/me")
 async def list_my_appointments(current_user: User = Depends(get_current_user)):
-    """List appointments for current user (as patient OR doctor)"""
+    """List appointments for current user (as patient OR doctor). Notes decrypted for participants."""
     query = {"$or": [
         {"patient_id": current_user.user_id},
         {"doctor_id": current_user.user_id}
     ]}
     appointments = await db.appointments.find(query, {"_id": 0}).sort("scheduled_at", -1).to_list(200)
+    for a in appointments:
+        a["notes"] = decrypt_phi(a.get("notes"))
     return {"count": len(appointments), "appointments": appointments}
 
 
@@ -804,7 +992,7 @@ async def update_appointment(
             raise HTTPException(status_code=403, detail="Only doctor can mark appointment completed")
         update_doc["status"] = update.status
     if update.notes is not None:
-        update_doc["notes"] = update.notes
+        update_doc["notes"] = encrypt_phi(update.notes)
     
     if update_doc:
         await db.appointments.update_one({"appointment_id": appointment_id}, {"$set": update_doc})
@@ -822,13 +1010,15 @@ async def update_appointment(
         })
     
     appt = await db.appointments.find_one({"appointment_id": appointment_id}, {"_id": 0})
+    if appt:
+        appt["notes"] = decrypt_phi(appt.get("notes"))
     return appt
 
 
+# ============= APPOINTMENTS DOCTOR BOOKED-SLOTS =============
 @api_router.get("/appointments/doctor/{doctor_id}/booked-slots")
 async def get_doctor_booked_slots(doctor_id: str, date: str):
     """Get booked time slots for a doctor on a specific date (YYYY-MM-DD)"""
-    # Match appointments where scheduled_at starts with the date
     appointments = await db.appointments.find(
         {
             "doctor_id": doctor_id,
@@ -991,11 +1181,11 @@ async def send_chat_message(
         user_msg = UserMessage(text=message.text)
         ai_response = await chat.send_message(user_msg)
         
-        # Store both messages
+        # Store both messages (encrypted at rest for PHI privacy)
         now = datetime.now(timezone.utc).isoformat()
         new_messages = [
-            {"role": "user", "content": message.text, "timestamp": now},
-            {"role": "assistant", "content": ai_response, "timestamp": now}
+            {"role": "user", "content": encrypt_phi(message.text), "timestamp": now},
+            {"role": "assistant", "content": encrypt_phi(ai_response), "timestamp": now}
         ]
         
         await db.chat_sessions.update_one(
@@ -1020,12 +1210,16 @@ async def list_my_chats(current_user: User = Depends(get_current_user)):
 
 @api_router.get("/chat/{session_id}")
 async def get_chat(session_id: str, current_user: User = Depends(get_current_user)):
-    """Get full chat session with messages"""
+    """Get full chat session with messages (decrypted for owner only)"""
     session = await db.chat_sessions.find_one({"session_id": session_id}, {"_id": 0})
     if not session:
         raise HTTPException(status_code=404, detail="Chat session not found")
     if session["user_id"] != current_user.user_id:
         raise HTTPException(status_code=403, detail="Not your chat session")
+    # Decrypt messages for owner
+    for m in session.get("messages", []):
+        if "content" in m:
+            m["content"] = decrypt_phi(m["content"])
     return session
 
 
