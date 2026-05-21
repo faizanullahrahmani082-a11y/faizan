@@ -58,7 +58,9 @@ const Dashboard = () => {
   const handleLogout = async () => {
     try {
       await api.post('/auth/logout');
-    } catch {}
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     toast.success('Logged out');

@@ -135,7 +135,7 @@ const ReportsTab = ({ user }) => {
               <h4 className="font-semibold mb-2 text-start">{t('topMedicines')}</h4>
               <div className="space-y-2">
                 {currentReport.top_medicines.map((m, idx) => (
-                  <div key={idx} className="flex items-center justify-between border rounded p-3">
+                  <div key={m.name || `top-${idx}`} className="flex items-center justify-between border rounded p-3">
                     <span className="font-medium">{idx + 1}. {m.name}</span>
                     <div className="flex gap-4 text-sm text-muted-foreground">
                       <span>{m.quantity} units</span>

@@ -151,7 +151,9 @@ const VideoCall = () => {
     cleanup();
     try {
       await api.post(`/video/rooms/${roomId}/close`);
-    } catch (e) {}
+    } catch (e) {
+      console.error('Failed to close room:', e);
+    }
     navigate('/dashboard');
   };
 

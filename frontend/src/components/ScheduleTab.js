@@ -18,9 +18,14 @@ const ScheduleTab = () => {
   const load = async () => {
     try {
       const res = await api.get('/schedule/me');
-      setSlots(res.data.slots || []);
+      // Add stable _key for React rendering
+      const withKeys = (res.data.slots || []).map((s, i) => ({
+        ...s,
+        _key: s._key || `slot_loaded_${i}_${Date.now()}`
+      }));
+      setSlots(withKeys);
     } catch (e) {
-      console.error(e);
+      console.error('Failed to load schedule:', e);
     }
   };
 
@@ -47,7 +52,9 @@ const ScheduleTab = () => {
 
   const save = async () => {
     try {
-      await api.put('/schedule', { slots });
+      // Strip _key before sending to backend
+      const cleanSlots = slots.map(({ _key, ...rest }) => rest);
+      await api.put('/schedule', { slots: cleanSlots });
       toast.success('Schedule saved');
     } catch (e) {
       toast.error(t('error'));
@@ -65,7 +72,7 @@ const ScheduleTab = () => {
           <p className="text-muted-foreground text-center py-8">{t('mySchedule')}</p>
         )}
         {slots.map((slot, idx) => (
-          <div key={idx} className="border rounded-lg p-4 grid grid-cols-1 md:grid-cols-5 gap-3 items-end" data-testid={`schedule-slot-${idx}`}>
+          <div key={slot._key || idx} className="border rounded-lg p-4 grid grid-cols-1 md:grid-cols-5 gap-3 items-end" data-testid={`schedule-slot-${idx}`}>
             <div>
               <Label className="text-start block text-xs">Day</Label>
               <Select value={String(slot.day_of_week)} onValueChange={(v) => updateSlot(idx, 'day_of_week', parseInt(v))}>

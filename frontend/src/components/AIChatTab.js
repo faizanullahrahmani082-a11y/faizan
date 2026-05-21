@@ -118,7 +118,7 @@ const AIChatTab = ({ user }) => {
             )}
             {messages.map((msg, idx) => (
               <div
-                key={idx}
+                key={msg.timestamp ? `${msg.timestamp}-${msg.role}-${idx}` : idx}
                 className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 data-testid={`chat-msg-${idx}`}
               >

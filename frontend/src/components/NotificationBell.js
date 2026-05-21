@@ -26,7 +26,7 @@ const NotificationBell = () => {
         lastSinceRef.current = res.data.notifications[0].created_at;
       }
     } catch (e) {
-      // silent fail for polling
+      console.warn('Notification poll failed:', e?.message);
     }
   };
 
@@ -41,7 +41,9 @@ const NotificationBell = () => {
       await api.put(`/notifications/${id}/read`);
       setNotifications(prev => prev.map(n => n.notification_id === id ? { ...n, is_read: true } : n));
       setUnreadCount(prev => Math.max(0, prev - 1));
-    } catch (e) {}
+    } catch (e) {
+      console.error('Mark read failed:', e);
+    }
   };
 
   const markAllRead = async () => {
@@ -49,7 +51,9 @@ const NotificationBell = () => {
       await api.put('/notifications/read-all');
       setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
       setUnreadCount(0);
-    } catch (e) {}
+    } catch (e) {
+      console.error('Mark all read failed:', e);
+    }
   };
 
   return (
