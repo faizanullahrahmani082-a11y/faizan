@@ -8,7 +8,9 @@ import { Textarea } from './ui/textarea';
 import { Switch } from './ui/switch';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Search, Plus, Pill, Trash2, ShoppingCart, Upload } from 'lucide-react';
+import { CURRENCIES, formatPrice } from '../utils/currency';
 import api from '../api';
 import { toast } from 'sonner';
 
@@ -19,7 +21,7 @@ const MedicinesTab = ({ user }) => {
   const [showAddForm, setShowAddForm] = useState(false);
   const [form, setForm] = useState({
     name: '', generic_name: '', category: '', manufacturer: '',
-    price: '', stock: '', description: '', requires_prescription: false,
+    price: '', currency: 'USD', stock: '', description: '', requires_prescription: false,
   });
   const [orderDialog, setOrderDialog] = useState(null);
   const [orderQty, setOrderQty] = useState(1);
@@ -57,7 +59,7 @@ const MedicinesTab = ({ user }) => {
         stock: parseInt(form.stock || 0),
       });
       toast.success(t('medicineAdded'));
-      setForm({ name: '', generic_name: '', category: '', manufacturer: '', price: '', stock: '', description: '', requires_prescription: false });
+      setForm({ name: '', generic_name: '', category: '', manufacturer: '', price: '', currency: 'USD', stock: '', description: '', requires_prescription: false });
       setShowAddForm(false);
       loadMedicines();
     } catch (e) {
@@ -152,7 +154,17 @@ const MedicinesTab = ({ user }) => {
                 </div>
                 <div>
                   <Label className="text-start block">{t('price')} *</Label>
-                  <Input type="number" step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} required data-testid="medicine-price-input" />
+                  <div className="flex gap-2">
+                    <Select value={form.currency} onValueChange={(v) => setForm({ ...form, currency: v })}>
+                      <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {CURRENCIES.map((c) => (
+                          <SelectItem key={c.code} value={c.code}>{c.symbol} {c.code}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input type="number" step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} required data-testid="medicine-price-input" className="flex-1" />
+                  </div>
                 </div>
                 <div>
                   <Label className="text-start block">{t('stock')}</Label>
@@ -189,7 +201,7 @@ const MedicinesTab = ({ user }) => {
                     </div>
                     <p className="text-sm text-muted-foreground">{med.pharmacy_name}</p>
                     <div className="flex items-center justify-between">
-                      <span className="font-medium text-primary">${med.price?.toFixed(2)}</span>
+                      <span className="font-medium text-primary">{formatPrice(med.price, med.currency)}</span>
                       {med.requires_prescription && <Badge variant="outline">Rx</Badge>}
                     </div>
                     {med.category && <Badge variant="secondary">{med.category}</Badge>}
@@ -214,13 +226,13 @@ const MedicinesTab = ({ user }) => {
       </Card>
 
       <Dialog open={!!orderDialog} onOpenChange={(o) => !o && setOrderDialog(null)}>
-        <DialogContent data-testid="order-dialog">
+        <DialogContent aria-describedby={undefined} data-testid="order-dialog">
           <DialogHeader><DialogTitle>{t('placeOrder')}: {orderDialog?.name}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div>
               <Label>{t('quantity')}</Label>
               <Input type="number" min="1" max={orderDialog?.stock} value={orderQty} onChange={(e) => setOrderQty(parseInt(e.target.value) || 1)} data-testid="order-quantity-input" />
-              <p className="text-xs text-muted-foreground mt-1">Total: ${((orderDialog?.price || 0) * orderQty).toFixed(2)}</p>
+              <p className="text-xs text-muted-foreground mt-1">Total: {formatPrice((orderDialog?.price || 0) * orderQty, orderDialog?.currency)}</p>
             </div>
             <div>
               <Label>{t('deliveryAddress')}</Label>

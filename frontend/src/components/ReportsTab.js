@@ -6,6 +6,7 @@ import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { FileText, Mail, TrendingUp, Star, Package } from 'lucide-react';
+import { formatPrice } from '../utils/currency';
 import api from '../api';
 import { toast } from 'sonner';
 
@@ -15,6 +16,7 @@ const ReportsTab = ({ user }) => {
   const [savedReports, setSavedReports] = useState([]);
   const [loading, setLoading] = useState(false);
   const [consultationFee, setConsultationFee] = useState(user?.profile_data?.consultation_fee || 30);
+  const doctorCurrency = user?.profile_data?.currency || 'USD';
 
   const isDoctor = user?.user_type === 'Doctor';
 
@@ -96,7 +98,7 @@ const ReportsTab = ({ user }) => {
                 <CardContent className="p-4 text-start">
                   <TrendingUp className="w-6 h-6 text-primary mb-2" />
                   <p className="text-xs text-muted-foreground">{t('totalGmv')}</p>
-                  <p className="text-2xl font-bold">${(currentReport.gmv || 0).toFixed(2)}</p>
+                  <p className="text-2xl font-bold">{formatPrice(currentReport.gmv || 0, doctorCurrency)}</p>
                 </CardContent>
               </Card>
               {currentReport.total_orders !== undefined && (
@@ -139,7 +141,7 @@ const ReportsTab = ({ user }) => {
                     <span className="font-medium">{idx + 1}. {m.name}</span>
                     <div className="flex gap-4 text-sm text-muted-foreground">
                       <span>{m.quantity} units</span>
-                      <span className="font-medium text-primary">${m.revenue?.toFixed(2)}</span>
+                      <span className="font-medium text-primary">{formatPrice(m.revenue, doctorCurrency)}</span>
                     </div>
                   </div>
                 ))}

@@ -8,7 +8,10 @@ import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Calendar } from './ui/calendar';
 import { Badge } from './ui/badge';
-import { Calendar as CalendarIcon, Video, MapPin, Clock } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
+import { Calendar as CalendarIcon, Video, MapPin, Clock, Stethoscope, Building2, DollarSign, Award, HeartPulse } from 'lucide-react';
+import { formatPrice } from '../utils/currency';
+import MedicalRecordTab from './MedicalRecordTab';
 import api from '../api';
 import { toast } from 'sonner';
 
@@ -36,6 +39,7 @@ const AppointmentsTab = ({ user }) => {
   const [bookedSlots, setBookedSlots] = useState([]);
 
   const isPatient = user?.user_type === 'Patient';
+  const [patientRecordId, setPatientRecordId] = useState(null);
 
   const loadAppointments = async () => {
     try {
@@ -134,7 +138,7 @@ const AppointmentsTab = ({ user }) => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
+            <div className="space-y-3">
               <Label className="text-start block mb-2">{t('selectDoctor')}</Label>
               <Select value={selectedDoctor} onValueChange={setSelectedDoctor}>
                 <SelectTrigger data-testid="doctor-select"><SelectValue placeholder={t('selectDoctor')} /></SelectTrigger>
@@ -146,6 +150,66 @@ const AppointmentsTab = ({ user }) => {
                   ))}
                 </SelectContent>
               </Select>
+
+              {/* Doctor info card */}
+              {selectedDoctor && (() => {
+                const doc = doctors.find(d => d.user_id === selectedDoctor);
+                if (!doc) return null;
+                const pd = doc.profile_data || {};
+                return (
+                  <div className="rounded-lg border bg-muted/40 p-4 space-y-3">
+                    <div className="flex items-center gap-3">
+                      {doc.picture ? (
+                        <img src={doc.picture} alt={doc.name} className="w-12 h-12 rounded-full object-cover" />
+                      ) : (
+                        <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center text-lg font-bold text-primary">
+                          {doc.name?.[0]?.toUpperCase()}
+                        </div>
+                      )}
+                      <div className="text-start">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-sm">{doc.name}</span>
+                          {doc.is_verified && <Badge className="bg-primary text-xs px-1 py-0">{t('verified')}</Badge>}
+                        </div>
+                        {pd.specialty && <p className="text-xs text-primary font-medium">{pd.specialty}</p>}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                      {pd.hospital && (
+                        <div className="flex items-center gap-1">
+                          <Building2 className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{pd.hospital}</span>
+                        </div>
+                      )}
+                      {pd.years_experience != null && (
+                        <div className="flex items-center gap-1">
+                          <Award className="w-3 h-3 shrink-0" />
+                          <span>{pd.years_experience} {t('yearsExperience')}</span>
+                        </div>
+                      )}
+                      {pd.working_hours && (
+                        <div className="flex items-center gap-1">
+                          <Clock className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{pd.working_hours}</span>
+                        </div>
+                      )}
+                      {pd.consultation_fee != null && (
+                        <div className="flex items-center gap-1">
+                          <DollarSign className="w-3 h-3 shrink-0" />
+                          <span>{formatPrice(pd.consultation_fee, pd.currency)} {t('feePerConsultation')}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {pd.bio && (
+                      <p className="text-xs text-muted-foreground text-start italic border-t pt-2 line-clamp-3">
+                        {pd.bio}
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="grid md:grid-cols-2 gap-4">
@@ -228,7 +292,7 @@ const AppointmentsTab = ({ user }) => {
                     </div>
                     {appt.notes && <p className="text-sm mt-1">{appt.notes}</p>}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     {!isPatient && appt.status === 'pending' && (
                       <Button size="sm" onClick={() => updateStatus(appt.appointment_id, 'confirmed')} data-testid={`confirm-${appt.appointment_id}`}>
                         {t('confirm')}
@@ -244,6 +308,16 @@ const AppointmentsTab = ({ user }) => {
                         <Video className="w-4 h-4 me-1" /> {t('joinVideo')}
                       </Button>
                     )}
+                    {!isPatient && ['confirmed', 'pending'].includes(appt.status) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setPatientRecordId(appt.patient_id)}
+                        data-testid={`view-record-${appt.appointment_id}`}
+                      >
+                        <HeartPulse className="w-4 h-4 me-1" /> {t('viewRecord')}
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -251,6 +325,19 @@ const AppointmentsTab = ({ user }) => {
           )}
         </CardContent>
       </Card>
+      {/* Patient Medical Record dialog — for doctors */}
+      <Dialog open={!!patientRecordId} onOpenChange={o => !o && setPatientRecordId(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" aria-describedby={undefined} data-testid="patient-record-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <HeartPulse className="w-5 h-5 text-primary" /> {t('patientRecord')}
+            </DialogTitle>
+          </DialogHeader>
+          {patientRecordId && (
+            <MedicalRecordTab user={user} patientId={patientRecordId} readOnly />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

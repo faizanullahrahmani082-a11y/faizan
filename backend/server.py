@@ -17,6 +17,7 @@ import requests
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import base64
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -108,11 +109,32 @@ def decrypt_patient_profile(profile_data: dict) -> dict:
     return out
 
 
-# Object Storage
-STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
-EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
-APP_NAME = "afghan-health"
-storage_key = None  # Module-level
+# ── Local File Storage ──────────────────────────────────────────────────────
+UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+def init_storage():
+    """No-op: using local disk storage."""
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    logger.info("Object storage initialized successfully")
+
+def put_object(file_id: str, data: bytes, content_type: str) -> dict:
+    """Save bytes to local uploads/ directory."""
+    dest = os.path.join(UPLOADS_DIR, file_id)
+    with open(dest, "wb") as f:
+        f.write(data)
+    return {"path": file_id, "size": len(data)}
+
+def get_object(file_id: str):
+    """Read bytes from local uploads/ directory."""
+    path = os.path.join(UPLOADS_DIR, file_id)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"File not found: {file_id}")
+    with open(path, "rb") as f:
+        return f.read(), "application/octet-stream"
+
+# ── AI / LLM ─────────────────────────────────────────────────────────────────
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
 
 # Commission rates
 COMMISSION_RATES = {
@@ -120,45 +142,28 @@ COMMISSION_RATES = {
     "consultation": 0.12,    # 12% on online doctor consultations
 }
 
+# ============= EMAIL (Resend) =============
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+FROM_EMAIL = os.environ.get("FROM_EMAIL", "noreply@faizan.af")
 
-def init_storage():
-    """Call once at startup. Returns session-scoped reusable storage_key."""
-    global storage_key
-    if storage_key:
-        return storage_key
-    try:
-        resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+
+async def send_email(to: str, subject: str, html: str) -> dict:
+    """Send an email via Resend API. Falls back to simulation if RESEND_API_KEY is not set."""
+    if not RESEND_API_KEY:
+        logger_pre = logging.getLogger(__name__)
+        logger_pre.info(f"[EMAIL SIMULATED] To: {to} | Subject: {subject}")
+        return {"simulated": True, "to": to, "subject": subject}
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={"from": FROM_EMAIL, "to": [to], "subject": subject, "html": html},
+            timeout=15,
+        )
         resp.raise_for_status()
-        storage_key = resp.json()["storage_key"]
-        return storage_key
-    except Exception as e:
-        logging.error(f"Storage init failed: {e}")
-        return None
+        return resp.json()
 
-
-def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    if not key:
-        raise HTTPException(status_code=503, detail="Storage unavailable")
-    resp = requests.put(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key, "Content-Type": content_type},
-        data=data, timeout=120
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def get_object(path: str):
-    key = init_storage()
-    if not key:
-        raise HTTPException(status_code=503, detail="Storage unavailable")
-    resp = requests.get(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key}, timeout=60
-    )
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -180,6 +185,8 @@ class User(BaseModel):
     is_verified: Optional[bool] = False
     is_featured: Optional[bool] = False
     featured_until: Optional[str] = None
+    is_admin: Optional[bool] = False
+    is_banned: Optional[bool] = False
     created_at: datetime
 
 
@@ -221,7 +228,9 @@ class DoctorProfile(BaseModel):
     hospital: Optional[str] = None
     years_experience: Optional[int] = None
     working_hours: Optional[str] = None  # e.g. "Mon-Fri 9:00-17:00"
-    consultation_fee: Optional[float] = 30.0  # USD per video consultation
+    consultation_fee: Optional[float] = 30.0
+    currency: Optional[str] = "USD"  # USD | AFN
+    bio: Optional[str] = None  # Free-text professional description
 
 
 class PatientProfile(BaseModel):
@@ -254,6 +263,41 @@ class ProfileUpdate(BaseModel):
     phone: Optional[str] = None
     picture: Optional[str] = None
     profile_data: Optional[dict] = None  # role-specific fields
+
+
+# ============= SERVICE TICKET MODELS =============
+class ServiceTicketCreate(BaseModel):
+    device_type: str  # e.g. "MRI", "X-Ray", "Ultrasound"
+    issue_description: str
+    location: Optional[str] = None
+    urgency: Optional[str] = "normal"  # normal, urgent, critical
+    contact_phone: Optional[str] = None
+
+
+class ServiceTicketUpdate(BaseModel):
+    status: Optional[str] = None  # open, accepted, in_progress, completed, cancelled
+    engineer_notes: Optional[str] = None
+
+
+# ============= PASSWORD RESET MODELS =============
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str
+
+
+# ============= MEDICAL RECORD MODELS =============
+class MedicalRecordUpdate(BaseModel):
+    allergies: Optional[List[str]] = None
+    current_medications: Optional[List[str]] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+    notes: Optional[str] = None
+    # PHI already in PatientProfile: blood_type, chronic_illnesses — kept there
+    # This record adds the rest of the clinical context
 
 
 # ============= LOCATION MODELS =============
@@ -337,6 +381,12 @@ async def get_current_user(request: Request, credentials: Optional[HTTPAuthoriza
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
+async def get_admin_user(current_user: User = Depends(get_current_user)) -> User:
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+
 # ============= AUTH ROUTES =============
 @api_router.post("/auth/register")
 async def register(user_data: UserRegister):
@@ -358,15 +408,18 @@ async def register(user_data: UserRegister):
         "picture": None,
         "phone": None,
         "profile_data": {},
+        "is_verified": False,
+        "is_admin": False,
+        "is_banned": False,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     await db.users.insert_one(user_doc)
     user_doc.pop("_id", None)
-    
+
     # Create JWT token
     access_token = create_access_token({"sub": user_id})
-    
+
     user_doc.pop("password", None)
     user_doc.pop("_id", None)
     return {"user": user_doc, "token": access_token}
@@ -378,14 +431,18 @@ async def login(credentials: UserLogin):
     user_doc = await db.users.find_one({"email": credentials.email}, {"_id": 0})
     if not user_doc:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     # Verify password
     if not verify_password(credentials.password, user_doc.get("password", "")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
+    # Check ban
+    if user_doc.get("is_banned"):
+        raise HTTPException(status_code=403, detail="Your account has been suspended. Contact support.")
+
     # Create JWT token
     access_token = create_access_token({"sub": user_doc["user_id"]})
-    
+
     user_doc.pop("password", None)
     return {"user": user_doc, "token": access_token}
 
@@ -853,7 +910,7 @@ async def translate_text(request: TranslateRequest, current_user: User = Depends
         
         # Create LLM chat instance
         chat = LlmChat(
-            api_key=os.environ.get('EMERGENT_LLM_KEY'),
+            api_key=GOOGLE_API_KEY,
             session_id=f"translate_{current_user.user_id}",
             system_message=f"You are a professional medical translator. Translate the following text from {source} to {target}. Only return the translation, nothing else."
         ).with_model("gemini", "gemini-3.1-pro-preview")
@@ -886,6 +943,7 @@ class MedicineCreate(BaseModel):
     category: Optional[str] = None  # antibiotic, painkiller, vitamin, etc.
     manufacturer: Optional[str] = None
     price: float
+    currency: Optional[str] = "USD"  # USD | AFN
     stock: int = 0
     description: Optional[str] = None
     requires_prescription: bool = False
@@ -897,6 +955,7 @@ class MedicineUpdate(BaseModel):
     category: Optional[str] = None
     manufacturer: Optional[str] = None
     price: Optional[float] = None
+    currency: Optional[str] = None
     stock: Optional[int] = None
     description: Optional[str] = None
     requires_prescription: Optional[bool] = None
@@ -929,14 +988,55 @@ class VideoSignal(BaseModel):
 # ============= APPOINTMENTS =============
 @api_router.post("/appointments")
 async def create_appointment(appt: AppointmentCreate, current_user: User = Depends(get_current_user)):
-    """Patient books an appointment with a Doctor"""
+    """Patient books an appointment with a Doctor. Validates against doctor's schedule."""
     if current_user.user_type != "Patient":
         raise HTTPException(status_code=403, detail="Only patients can book appointments")
-    
+
     doctor = await db.users.find_one({"user_id": appt.doctor_id, "user_type": "Doctor"}, {"_id": 0})
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
-    
+
+    # --- Schedule validation ---
+    try:
+        scheduled_dt = datetime.fromisoformat(appt.scheduled_at.replace("Z", "+00:00"))
+        if scheduled_dt.tzinfo is None:
+            scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid scheduled_at format (use ISO 8601)")
+
+    if scheduled_dt < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Cannot book an appointment in the past")
+
+    schedule_doc = await db.schedules.find_one({"doctor_id": appt.doctor_id})
+    if schedule_doc and schedule_doc.get("slots"):
+        # Python weekday(): Mon=0…Sun=6 → our model: Sun=0,Mon=1…Sat=6
+        py_dow = scheduled_dt.weekday()  # 0=Mon
+        our_dow = (py_dow + 1) % 7       # 0=Sun
+        appt_time = scheduled_dt.strftime("%H:%M")
+
+        valid_slot = False
+        for slot in schedule_doc["slots"]:
+            if slot.get("day_of_week") != our_dow:
+                continue
+            if slot.get("start_time", "00:00") <= appt_time <= slot.get("end_time", "23:59"):
+                valid_slot = True
+                break
+
+        if not valid_slot:
+            raise HTTPException(
+                status_code=400,
+                detail=f"The requested time ({appt_time}) is outside the doctor's working hours for that day."
+            )
+
+    # Double-booking check
+    existing = await db.appointments.find_one({
+        "doctor_id": appt.doctor_id,
+        "scheduled_at": appt.scheduled_at,
+        "status": {"$nin": ["cancelled"]}
+    })
+    if existing:
+        raise HTTPException(status_code=409, detail="This time slot is already booked")
+
     appointment_id = f"appt_{uuid.uuid4().hex[:12]}"
     appointment_doc = {
         "appointment_id": appointment_id,
@@ -951,10 +1051,26 @@ async def create_appointment(appt: AppointmentCreate, current_user: User = Depen
         "video_room_id": None,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     await db.appointments.insert_one(appointment_doc)
     appointment_doc.pop("_id", None)
     appointment_doc["notes"] = decrypt_phi(appointment_doc["notes"])
+
+    # Email confirmation
+    try:
+        html = f"""<div style="font-family:sans-serif;padding:24px">
+        <h2 style="color:#16a34a">Appointment Confirmed</h2>
+        <p>Hello {current_user.name},</p>
+        <p>Your appointment with <b>Dr. {doctor['name']}</b> has been booked.</p>
+        <ul>
+          <li><b>Date/Time:</b> {appt.scheduled_at.replace('T', ' ').replace(':00', '')}</li>
+          <li><b>Type:</b> {appt.appointment_type}</li>
+        </ul>
+        <p style="color:#6b7280;font-size:12px">Afghan Health Portal</p></div>"""
+        await send_email(current_user.email, "Appointment booked — Afghan Health Portal", html)
+    except Exception:
+        pass  # non-blocking
+
     return appointment_doc
 
 
@@ -1047,6 +1163,7 @@ async def create_medicine(med: MedicineCreate, current_user: User = Depends(get_
         "category": med.category,
         "manufacturer": med.manufacturer,
         "price": med.price,
+        "currency": med.currency or "USD",
         "stock": med.stock,
         "description": med.description,
         "requires_prescription": med.requires_prescription,
@@ -1173,7 +1290,7 @@ async def send_chat_message(
         system_prompt = SYSTEM_PROMPTS.get(session["chat_type"], SYSTEM_PROMPTS["symptom"])
         
         chat = LlmChat(
-            api_key=os.environ.get('EMERGENT_LLM_KEY'),
+            api_key=GOOGLE_API_KEY,
             session_id=session_id,
             system_message=system_prompt
         ).with_model("gemini", "gemini-3.1-pro-preview")
@@ -1493,17 +1610,16 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="File too large (max 5MB)")
     
     ext = (file.filename or "bin").split(".")[-1].lower()
-    file_id = f"file_{uuid.uuid4().hex[:12]}"
-    path = f"{APP_NAME}/uploads/{current_user.user_id}/{file_id}.{ext}"
-    
+    file_id = f"file_{uuid.uuid4().hex[:12]}.{ext}"
+
     try:
-        result = put_object(path, data, file.content_type)
+        result = put_object(file_id, data, file.content_type)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Storage upload failed: {str(e)}")
-    
+
     file_doc = {
         "file_id": file_id,
-        "storage_path": result["path"],
+        "storage_path": file_id,
         "owner_id": current_user.user_id,
         "original_filename": file.filename,
         "content_type": file.content_type,
@@ -1513,17 +1629,16 @@ async def upload_file(
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.files.insert_one(file_doc)
-    
-    # If profile picture, update user
+
     if purpose == "profile_picture":
         await db.users.update_one(
             {"user_id": current_user.user_id},
             {"$set": {"picture": f"/api/files/{file_id}"}}
         )
-    
+
     return {
         "file_id": file_id,
-        "storage_path": result["path"],
+        "storage_path": file_id,
         "url": f"/api/files/{file_id}",
         "size": file_doc["size"]
     }
@@ -1584,11 +1699,13 @@ async def download_file(
             raise HTTPException(status_code=403, detail="Not authorized to view this file")
     
     try:
-        data, content_type = get_object(record["storage_path"])
+        data, _ = get_object(record["storage_path"])
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File data not found on disk")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Storage retrieval failed: {str(e)}")
-    
-    return Response(content=data, media_type=record.get("content_type", content_type))
+
+    return Response(content=data, media_type=record.get("content_type", "application/octet-stream"))
 
 
 @api_router.delete("/files/{file_id}")
@@ -2094,8 +2211,12 @@ async def send_monthly_report(
         "created_at": datetime.now(timezone.utc).isoformat()
     })
     
-    # Log to backend (simulating Resend send)
-    logger.info(f"[MOCKED EMAIL] Monthly report sent to {current_user.email} for period {report.get('period')}")
+    # Send via Resend (or simulate if key not set)
+    try:
+        await send_email(current_user.email, f"Your {report.get('period')} Report — Afghan Health Portal", email_html)
+    except Exception as e:
+        logger.error(f"Monthly report email failed: {e}")
+    logger.info(f"Monthly report processed for {current_user.email} period {report.get('period')}")
     
     report_doc.pop("_id", None)
     return {
@@ -2115,6 +2236,397 @@ async def list_my_reports(current_user: User = Depends(get_current_user)):
         {"_id": 0, "email_html": 0}
     ).sort("created_at", -1).to_list(50)
     return {"count": len(reports), "reports": reports}
+
+
+# ============= DOCTORS LISTING (with filters) =============
+@api_router.get("/doctors")
+async def list_doctors(
+    specialty: Optional[str] = None,
+    max_fee: Optional[float] = None,
+    verified_only: bool = False,
+    language: Optional[str] = None,
+):
+    """Public listing of all doctors with their location and profile data."""
+    query: dict = {"user_type": "Doctor"}
+    if verified_only:
+        query["is_verified"] = True
+    if specialty:
+        query["profile_data.specialty"] = {"$regex": specialty, "$options": "i"}
+    if language:
+        query["profile_data.languages"] = {"$regex": language, "$options": "i"}
+    if max_fee is not None:
+        query["profile_data.consultation_fee"] = {"$lte": max_fee}
+
+    doctors = await db.users.find(
+        query,
+        {"_id": 0, "password": 0, "email": 0, "phone": 0}
+    ).to_list(500)
+
+    # Enrich with location + avg rating
+    results = []
+    for doc in doctors:
+        loc = await db.locations.find_one({"user_id": doc["user_id"]}, {"_id": 0})
+        review_pipe = [
+            {"$match": {"reviewee_id": doc["user_id"]}},
+            {"$group": {"_id": None, "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}}
+        ]
+        rev = await db.reviews.aggregate(review_pipe).to_list(1)
+        doc["avg_rating"] = round(rev[0]["avg"], 2) if rev else 0
+        doc["total_reviews"] = rev[0]["count"] if rev else 0
+        doc["location"] = loc
+        results.append(doc)
+
+    return {"count": len(results), "doctors": results}
+
+
+# ============= MEDICAL RECORD =============
+@api_router.get("/medical-record/me")
+async def get_my_medical_record(current_user: User = Depends(get_current_user)):
+    """Patient retrieves their own full medical record."""
+    record = await db.medical_records.find_one({"patient_id": current_user.user_id}, {"_id": 0})
+    if not record:
+        return {"patient_id": current_user.user_id, "allergies": [], "current_medications": [],
+                "emergency_contact_name": None, "emergency_contact_phone": None, "notes": None}
+    # Decrypt sensitive fields
+    record["notes"] = decrypt_phi(record.get("notes"))
+    if record.get("allergies"):
+        record["allergies"] = decrypt_list(record["allergies"])
+    if record.get("current_medications"):
+        record["current_medications"] = decrypt_list(record["current_medications"])
+    return record
+
+
+@api_router.put("/medical-record/me")
+async def update_my_medical_record(update: MedicalRecordUpdate, current_user: User = Depends(get_current_user)):
+    """Patient updates their medical record. All clinical data is encrypted at rest."""
+    if current_user.user_type != "Patient":
+        raise HTTPException(status_code=403, detail="Only patients have medical records")
+
+    set_doc: dict = {"patient_id": current_user.user_id, "updated_at": datetime.now(timezone.utc).isoformat()}
+
+    if update.allergies is not None:
+        set_doc["allergies"] = encrypt_list(update.allergies)
+    if update.current_medications is not None:
+        set_doc["current_medications"] = encrypt_list(update.current_medications)
+    if update.emergency_contact_name is not None:
+        set_doc["emergency_contact_name"] = update.emergency_contact_name
+    if update.emergency_contact_phone is not None:
+        set_doc["emergency_contact_phone"] = update.emergency_contact_phone
+    if update.notes is not None:
+        set_doc["notes"] = encrypt_phi(update.notes)
+
+    await db.medical_records.update_one(
+        {"patient_id": current_user.user_id},
+        {"$set": set_doc},
+        upsert=True
+    )
+    return await get_my_medical_record(current_user)
+
+
+@api_router.get("/medical-record/{patient_id}")
+async def get_patient_medical_record(patient_id: str, current_user: User = Depends(get_current_user)):
+    """Doctor accesses a patient's medical record — only allowed if there is a confirmed/pending appointment."""
+    if current_user.user_type not in ["Doctor"]:
+        raise HTTPException(status_code=403, detail="Only doctors can access patient records")
+
+    # Verify active appointment relationship
+    appt = await db.appointments.find_one({
+        "doctor_id": current_user.user_id,
+        "patient_id": patient_id,
+        "status": {"$in": ["pending", "confirmed"]}
+    })
+    if not appt:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied — no active appointment with this patient"
+        )
+
+    record = await db.medical_records.find_one({"patient_id": patient_id}, {"_id": 0})
+    if not record:
+        return {"patient_id": patient_id, "allergies": [], "current_medications": [],
+                "emergency_contact_name": None, "emergency_contact_phone": None, "notes": None}
+
+    # Decrypt for the treating doctor
+    record["notes"] = decrypt_phi(record.get("notes"))
+    if record.get("allergies"):
+        record["allergies"] = decrypt_list(record["allergies"])
+    if record.get("current_medications"):
+        record["current_medications"] = decrypt_list(record["current_medications"])
+
+    # Also grab the patient's profile data for context (blood type, chronic illnesses)
+    patient = await db.users.find_one({"user_id": patient_id}, {"_id": 0, "password": 0})
+    if patient and patient.get("user_type") == "Patient":
+        pd = decrypt_patient_profile(patient.get("profile_data", {}))
+        record["patient_name"] = patient.get("name")
+        record["blood_type"] = pd.get("blood_type")
+        record["chronic_illnesses"] = pd.get("chronic_illnesses", [])
+        record["age"] = pd.get("age")
+        record["gender"] = pd.get("gender")
+
+    return record
+
+
+# ============= ADMIN ROUTES =============
+@api_router.get("/admin/stats")
+async def admin_stats(_admin: User = Depends(get_admin_user)):
+    """Platform-wide statistics for admin dashboard"""
+    user_counts_pipeline = [
+        {"$group": {"_id": "$user_type", "count": {"$sum": 1}}}
+    ]
+    raw = await db.users.aggregate(user_counts_pipeline).to_list(20)
+    by_type = {r["_id"]: r["count"] for r in raw}
+
+    total_users = await db.users.count_documents({})
+    pending_verifications = await db.users.count_documents({"is_verified": False, "user_type": {"$in": ["Doctor", "Pharmacy", "Biomedical Engineer"]}})
+    banned_users = await db.users.count_documents({"is_banned": True})
+
+    total_orders = await db.orders.count_documents({})
+    total_appointments = await db.appointments.count_documents({})
+    total_medicines = await db.medicines.count_documents({})
+    total_tickets = await db.service_tickets.count_documents({})
+
+    gmv_pipeline = [
+        {"$match": {"status": {"$ne": "cancelled"}}},
+        {"$group": {"_id": None, "total": {"$sum": "$subtotal"}}}
+    ]
+    gmv_raw = await db.orders.aggregate(gmv_pipeline).to_list(1)
+    total_gmv = gmv_raw[0]["total"] if gmv_raw else 0
+
+    commission_pipeline = [
+        {"$match": {"status": {"$ne": "cancelled"}}},
+        {"$group": {"_id": None, "total": {"$sum": "$commission_amount"}}}
+    ]
+    comm_raw = await db.orders.aggregate(commission_pipeline).to_list(1)
+    total_commission = comm_raw[0]["total"] if comm_raw else 0
+
+    return {
+        "total_users": total_users,
+        "users_by_type": by_type,
+        "pending_verifications": pending_verifications,
+        "banned_users": banned_users,
+        "total_orders": total_orders,
+        "total_appointments": total_appointments,
+        "total_medicines": total_medicines,
+        "total_service_tickets": total_tickets,
+        "total_gmv": total_gmv,
+        "total_commission": total_commission,
+    }
+
+
+@api_router.get("/admin/users")
+async def admin_list_users(
+    page: int = 1,
+    limit: int = 20,
+    search: Optional[str] = None,
+    user_type: Optional[str] = None,
+    _admin: User = Depends(get_admin_user)
+):
+    """List all users with optional filters"""
+    query = {}
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"email": {"$regex": search, "$options": "i"}},
+        ]
+    if user_type:
+        query["user_type"] = user_type
+
+    total = await db.users.count_documents(query)
+    skip = (page - 1) * limit
+    users = await db.users.find(query, {"_id": 0, "password": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"total": total, "page": page, "limit": limit, "users": users}
+
+
+@api_router.put("/admin/users/{user_id}/verify")
+async def admin_toggle_verify(user_id: str, _admin: User = Depends(get_admin_user)):
+    """Toggle is_verified for a user"""
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    new_val = not user_doc.get("is_verified", False)
+    await db.users.update_one({"user_id": user_id}, {"$set": {"is_verified": new_val}})
+    return {"user_id": user_id, "is_verified": new_val}
+
+
+@api_router.put("/admin/users/{user_id}/ban")
+async def admin_toggle_ban(user_id: str, _admin: User = Depends(get_admin_user)):
+    """Toggle is_banned for a user"""
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user_doc.get("is_admin"):
+        raise HTTPException(status_code=400, detail="Cannot ban an admin account")
+    new_val = not user_doc.get("is_banned", False)
+    await db.users.update_one({"user_id": user_id}, {"$set": {"is_banned": new_val}})
+    return {"user_id": user_id, "is_banned": new_val}
+
+
+@api_router.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, _admin: User = Depends(get_admin_user)):
+    """Hard-delete a user account"""
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user_doc.get("is_admin"):
+        raise HTTPException(status_code=400, detail="Cannot delete an admin account")
+    await db.users.delete_one({"user_id": user_id})
+    return {"message": f"User {user_id} deleted"}
+
+
+# ============= FORGOT / RESET PASSWORD =============
+@api_router.post("/auth/forgot-password")
+async def forgot_password(req: PasswordResetRequest):
+    """Generate a password reset token. In production this sends an email via Resend."""
+    user_doc = await db.users.find_one({"email": req.email}, {"_id": 0})
+    if not user_doc:
+        # Return success even if email not found (security best practice)
+        return {"message": "If that email exists, a reset link has been sent."}
+
+    token = uuid.uuid4().hex
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+
+    await db.password_resets.update_one(
+        {"email": req.email},
+        {"$set": {"token": token, "expires_at": expires_at, "used": False}},
+        upsert=True
+    )
+
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    reset_url = f"{frontend_url}/reset-password/{token}"
+
+    html = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:24px">
+      <h2 style="color:#16a34a">Afghan Health Portal — Password Reset</h2>
+      <p>Hello,</p>
+      <p>You requested a password reset. Click the button below within 2 hours:</p>
+      <a href="{reset_url}" style="display:inline-block;background:#16a34a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;margin:16px 0">Reset Password</a>
+      <p style="color:#6b7280;font-size:12px">If you didn't request this, ignore this email.</p>
+    </div>"""
+
+    try:
+        await send_email(req.email, "Reset your Afghan Health Portal password", html)
+    except Exception as e:
+        logger.error(f"Email send failed: {e}")
+
+    return {
+        "message": "If that email exists, a reset link has been sent.",
+        "dev_token": token if not RESEND_API_KEY else None,
+        "dev_reset_url": reset_url if not RESEND_API_KEY else None,
+    }
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(req: PasswordResetConfirm):
+    """Consume reset token and set new password"""
+    record = await db.password_resets.find_one({"token": req.token, "used": False}, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    expires_at = record["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Reset token has expired")
+
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    new_hash = hash_password(req.new_password)
+    await db.users.update_one({"email": record["email"]}, {"$set": {"password": new_hash}})
+    await db.password_resets.update_one({"token": req.token}, {"$set": {"used": True}})
+
+    return {"message": "Password updated successfully"}
+
+
+# ============= SERVICE TICKETS (Biomedical Engineer) =============
+@api_router.post("/service-tickets")
+async def create_service_ticket(ticket: ServiceTicketCreate, current_user: User = Depends(get_current_user)):
+    """Create a medical device service request"""
+    ticket_id = f"ticket_{uuid.uuid4().hex[:12]}"
+    ticket_doc = {
+        "ticket_id": ticket_id,
+        "requester_id": current_user.user_id,
+        "requester_name": current_user.name,
+        "device_type": ticket.device_type,
+        "issue_description": ticket.issue_description,
+        "location": ticket.location,
+        "urgency": ticket.urgency or "normal",
+        "contact_phone": ticket.contact_phone or current_user.phone,
+        "status": "open",
+        "engineer_id": None,
+        "engineer_name": None,
+        "engineer_notes": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.service_tickets.insert_one(ticket_doc)
+    ticket_doc.pop("_id", None)
+    return ticket_doc
+
+
+@api_router.get("/service-tickets/available")
+async def list_available_tickets(
+    device_type: Optional[str] = None,
+    urgency: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """List open service tickets visible to engineers"""
+    if current_user.user_type != "Biomedical Engineer" and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Only engineers can browse open tickets")
+    query: dict = {"status": "open"}
+    if device_type:
+        query["device_type"] = {"$regex": device_type, "$options": "i"}
+    if urgency:
+        query["urgency"] = urgency
+    tickets = await db.service_tickets.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return {"count": len(tickets), "tickets": tickets}
+
+
+@api_router.get("/service-tickets/me")
+async def list_my_tickets(current_user: User = Depends(get_current_user)):
+    """List tickets created by or assigned to current user"""
+    query = {"$or": [
+        {"requester_id": current_user.user_id},
+        {"engineer_id": current_user.user_id}
+    ]}
+    tickets = await db.service_tickets.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return {"count": len(tickets), "tickets": tickets}
+
+
+@api_router.put("/service-tickets/{ticket_id}")
+async def update_service_ticket(
+    ticket_id: str,
+    update: ServiceTicketUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    """Engineer accepts / updates a ticket"""
+    ticket = await db.service_tickets.find_one({"ticket_id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    set_doc: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+
+    # Engineer accepting an open ticket
+    if update.status == "accepted" and ticket["status"] == "open":
+        if current_user.user_type != "Biomedical Engineer":
+            raise HTTPException(status_code=403, detail="Only engineers can accept tickets")
+        set_doc["engineer_id"] = current_user.user_id
+        set_doc["engineer_name"] = current_user.name
+        set_doc["status"] = "accepted"
+    elif update.status:
+        # Only assigned engineer or requester can change status further
+        if current_user.user_id not in [ticket.get("engineer_id"), ticket["requester_id"]] and not current_user.is_admin:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        set_doc["status"] = update.status
+
+    if update.engineer_notes is not None:
+        set_doc["engineer_notes"] = update.engineer_notes
+
+    await db.service_tickets.update_one({"ticket_id": ticket_id}, {"$set": set_doc})
+    ticket = await db.service_tickets.find_one({"ticket_id": ticket_id}, {"_id": 0})
+    return ticket
 
 
 # ============= BASIC ROUTES =============
@@ -2143,16 +2655,135 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def startup_event():
-    try:
-        init_storage()
-        logger.info("Object storage initialized successfully")
-    except Exception as e:
-        logger.error(f"Storage init failed at startup: {e}")
+    init_storage()  # creates uploads/ dir on disk
+
     # Pre-create geospatial index
     try:
         await db.locations.create_index([("location", "2dsphere")])
     except Exception:
         pass
+
+    # Seed default admin account if none exists
+    try:
+        existing_admin = await db.users.find_one({"is_admin": True})
+        if not existing_admin:
+            admin_id = f"user_{uuid.uuid4().hex[:12]}"
+            await db.users.insert_one({
+                "user_id": admin_id,
+                "email": "admin@faizan.af",
+                "name": "Admin",
+                "user_type": "Doctor",
+                "password": hash_password("Admin1234!"),
+                "picture": None,
+                "phone": None,
+                "profile_data": {},
+                "is_verified": True,
+                "is_admin": True,
+                "is_banned": False,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            logger.info("Default admin account created: admin@faizan.af / Admin1234!")
+        else:
+            logger.info(f"Admin account already exists: {existing_admin.get('email')}")
+    except Exception as e:
+        logger.error(f"Admin seed failed: {e}")
+
+    # Seed demo accounts (one per role) if they don't exist
+    demo_users = [
+        {
+            "email": "doctor@demo.af",
+            "name": "Dr. Ahmad Karimi",
+            "user_type": "Doctor",
+            "password": "Demo1234!",
+            "is_verified": True,
+            "profile_data": {
+                "specialty": "General Medicine",
+                "hospital": "Kabul Central Hospital",
+                "years_experience": 8,
+                "working_hours": "Mon-Fri 09:00-17:00",
+                "consultation_fee": 25.0,
+                "currency": "USD",
+                "bio": "Board-certified general practitioner with 8 years of experience in primary care and preventive medicine.",
+            },
+        },
+        {
+            "email": "patient@demo.af",
+            "name": "Fatima Noori",
+            "user_type": "Patient",
+            "password": "Demo1234!",
+            "is_verified": False,
+            "profile_data": {"age": 34, "gender": "female"},
+        },
+        {
+            "email": "pharmacy@demo.af",
+            "name": "Kabul Health Pharmacy",
+            "user_type": "Pharmacy",
+            "password": "Demo1234!",
+            "is_verified": True,
+            "profile_data": {
+                "business_name": "Kabul Health Pharmacy",
+                "is_24_7": True,
+                "opening_hours": "00:00",
+                "closing_hours": "23:59",
+            },
+        },
+        {
+            "email": "engineer@demo.af",
+            "name": "Reza Ahmadi",
+            "user_type": "Biomedical Engineer",
+            "password": "Demo1234!",
+            "is_verified": True,
+            "profile_data": {
+                "specialty": ["MRI", "X-Ray", "Ultrasound"],
+                "years_experience": 5,
+            },
+        },
+    ]
+    for demo in demo_users:
+        try:
+            if not await db.users.find_one({"email": demo["email"]}):
+                uid = f"user_{uuid.uuid4().hex[:12]}"
+                await db.users.insert_one({
+                    "user_id": uid,
+                    "email": demo["email"],
+                    "name": demo["name"],
+                    "user_type": demo["user_type"],
+                    "password": hash_password(demo["password"]),
+                    "picture": None,
+                    "phone": None,
+                    "profile_data": demo.get("profile_data", {}),
+                    "is_verified": demo.get("is_verified", False),
+                    "is_admin": False,
+                    "is_banned": False,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                })
+                logger.info(f"Demo account created: {demo['email']} / {demo['password']}")
+        except Exception as e:
+            logger.error(f"Demo seed failed for {demo['email']}: {e}")
+
+    # Add demo locations (Kabul area) for seeded users so they appear on the map
+    demo_locations = [
+        {"email": "doctor@demo.af",   "lat": 34.5253, "lng": 69.1783, "address": "Kabul Central Hospital, Kabul"},
+        {"email": "pharmacy@demo.af", "lat": 34.5355, "lng": 69.1890, "address": "Shahr-e-Naw, Kabul"},
+        {"email": "engineer@demo.af", "lat": 34.5453, "lng": 69.2010, "address": "Wazir Akbar Khan, Kabul"},
+    ]
+    for dl in demo_locations:
+        try:
+            u = await db.users.find_one({"email": dl["email"]}, {"_id": 0, "user_id": 1, "user_type": 1})
+            if u:
+                await db.locations.update_one(
+                    {"user_id": u["user_id"]},
+                    {"$set": {
+                        "user_id": u["user_id"],
+                        "user_type": u["user_type"],
+                        "location": {"type": "Point", "coordinates": [dl["lng"], dl["lat"]]},
+                        "address": dl["address"],
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }},
+                    upsert=True
+                )
+        except Exception as e:
+            logger.error(f"Demo location seed failed for {dl['email']}: {e}")
 
 
 @app.on_event("shutdown")

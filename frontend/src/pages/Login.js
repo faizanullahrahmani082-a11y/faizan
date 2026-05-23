@@ -144,12 +144,17 @@ const Login = () => {
               {t('googleLogin')}
             </Button>
 
-            <p className="text-center text-sm text-muted-foreground">
-              {t('dontHaveAccount')}{' '}
-              <Link to="/register" className="text-primary font-medium hover:underline" data-testid="register-link">
-                {t('signUpHere')}
+            <div className="flex flex-col items-center gap-1 text-sm text-muted-foreground">
+              <p>
+                {t('dontHaveAccount')}{' '}
+                <Link to="/register" className="text-primary font-medium hover:underline" data-testid="register-link">
+                  {t('signUpHere')}
+                </Link>
+              </p>
+              <Link to="/forgot-password" className="text-primary hover:underline" data-testid="forgot-password-link">
+                {t('forgotPassword')}
               </Link>
-            </p>
+            </div>
           </div>
         </div>
       </div>

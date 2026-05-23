@@ -52,6 +52,11 @@ __pycache__/
 venv/
 .venv/
 
+# Local uploads & logs
+backend/uploads/
+backend/backend.log
+*.log
+
 # Development tools
 chainlit.md
 .chainlit
