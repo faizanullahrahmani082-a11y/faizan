@@ -231,6 +231,7 @@ class DoctorProfile(BaseModel):
     consultation_fee: Optional[float] = 30.0
     currency: Optional[str] = "USD"  # USD | AFN
     bio: Optional[str] = None  # Free-text professional description
+    clinic_address: Optional[str] = None
 
 
 class PatientProfile(BaseModel):

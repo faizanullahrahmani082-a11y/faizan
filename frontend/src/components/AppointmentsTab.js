@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Calendar } from './ui/calendar';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
-import { Calendar as CalendarIcon, Video, MapPin, Clock, Stethoscope, Building2, DollarSign, Award, HeartPulse } from 'lucide-react';
+import { Calendar as CalendarIcon, Video, MapPin, Clock, Stethoscope, Building2, DollarSign, Award, HeartPulse, Navigation } from 'lucide-react';
 import { formatPrice } from '../utils/currency';
 import MedicalRecordTab from './MedicalRecordTab';
 import api from '../api';
@@ -198,6 +198,12 @@ const AppointmentsTab = ({ user }) => {
                         <div className="flex items-center gap-1">
                           <DollarSign className="w-3 h-3 shrink-0" />
                           <span>{formatPrice(pd.consultation_fee, pd.currency)} {t('feePerConsultation')}</span>
+                        </div>
+                      )}
+                      {pd.clinic_address && (
+                        <div className="flex items-center gap-1 col-span-2">
+                          <Navigation className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{pd.clinic_address}</span>
                         </div>
                       )}
                     </div>

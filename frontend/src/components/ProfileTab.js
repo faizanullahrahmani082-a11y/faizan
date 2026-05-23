@@ -7,7 +7,7 @@ import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Badge } from './ui/badge';
-import { Stethoscope, Building2, Clock, DollarSign, Award, Phone, User, FileText, BadgeCheck } from 'lucide-react';
+import { Stethoscope, Building2, Clock, DollarSign, Award, Phone, User, FileText, BadgeCheck, MapPin } from 'lucide-react';
 import { CURRENCIES } from '../utils/currency';
 import api from '../api';
 import { toast } from 'sonner';
@@ -46,6 +46,7 @@ const ProfileTab = ({ user, onUpdate }) => {
   const [fee, setFee] = useState(pd.consultation_fee ?? 30);
   const [currency, setCurrency] = useState(pd.currency || 'USD');
   const [bio, setBio] = useState(pd.bio || '');
+  const [clinicAddress, setClinicAddress] = useState(pd.clinic_address || '');
 
   const isDoctor = user?.user_type === 'Doctor';
 
@@ -63,6 +64,7 @@ const ProfileTab = ({ user, onUpdate }) => {
           consultation_fee: parseFloat(fee) || 30,
           currency,
           bio: bio || null,
+          clinic_address: clinicAddress || null,
         };
       }
       const res = await api.put('/profile', payload);
@@ -156,6 +158,10 @@ const ProfileTab = ({ user, onUpdate }) => {
 
               <Field label={t('hospital')} icon={Building2}>
                 <Input value={hospital} onChange={(e) => setHospital(e.target.value)} placeholder="Hospital / Clinic" />
+              </Field>
+
+              <Field label={t('clinicAddress')} icon={MapPin}>
+                <Input value={clinicAddress} onChange={(e) => setClinicAddress(e.target.value)} placeholder="Street, District, City" />
               </Field>
 
               <Field label={t('yearsExperience')}>
