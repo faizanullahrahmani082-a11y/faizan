@@ -1,0 +1,49 @@
+{
+  "summary": "Phase 2 backend testing complete. Created /app/backend/tests/test_phase2_profile_location_reviews.py with 32 tests covering profile CRUD (with role-specific validation for Doctor/Patient/Pharmacy/Engineer), location + GeoJSON 2dsphere nearby search, and reviews with role-pair rules. All 32 Phase 2 tests pass plus 20 iteration-1 regression tests = 52/52 passing. The 'Pharmacist'->'Pharmacy' rename works correctly. Seeded pharmacy@test.com / Pharmacy123! since old pharmacist@test.com still holds user_type='Pharmacist'.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/reviews", "issue": "Role-rule check (line 517-522) executes BEFORE the self-review check (line 524-525). Means the 'Cannot review yourself' 400 branch is unreachable for any user — patient reviewing self returns 403 (Patient->Patient not in ALLOWED_REVIEW_PAIRS) instead of 400. Either reorder (check self first) or document expected behavior."},
+      {"endpoint": "GET /api/profile", "issue": "Legacy users created before Phase 2 (e.g. doctor@test.com from iteration 1) do not have a 'profile_data' field in DB. GET returns the document without defaulting profile_data to {}. Consider returning {**user_doc, 'profile_data': user_doc.get('profile_data') or {}} for consistency."},
+      {"endpoint": "GET /api/profile/{user_id}", "issue": "Public profile correctly hides 'email' but still exposes 'phone' (which is PII) and full 'profile_data' (which for Patient contains age, gender, blood_type, chronic_illnesses — PHI). Consider stripping phone and gating sensitive patient profile fields."},
+      {"endpoint": "GET /api/nearby", "issue": "Creates the 2dsphere index on every call inside the request handler (line 459). Should be created once at app startup. Also no validation on radius_km (negative or huge values accepted), no pagination beyond hardcoded .to_list(50)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_profile_location_reviews.py",
+    "/app/backend/tests/test_auth_and_translate.py",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "action_items": [
+    "(LOW) In POST /api/reviews, move the self-review check above the role-pair check, or remove the 400 self check since it's currently dead code.",
+    "(LOW) In GET /api/profile, default missing 'profile_data' to {} so frontend doesn't have to defensively handle absence (legacy users).",
+    "(MEDIUM) Privacy: GET /api/profile/{user_id} (public) should exclude 'phone' and probably hide Patient profile_data (PHI). Currently any authenticated user can read any Patient's age/blood_type/chronic_illnesses.",
+    "(LOW) Move db.locations.create_index([('location', '2dsphere')]) from inside /nearby into app startup; validate radius_km > 0; add pagination params.",
+    "(LOW) /api/auth/register hardcodes profile_data={} but the User model has it Optional — keep consistent. Old pharmacist@test.com still holds user_type='Pharmacist' (now-invalid). Consider data migration or admin tool."
+  ],
+  "critical_code_review_comments": [
+    "Dead code: 'Cannot review yourself' (HTTP 400) in POST /api/reviews is unreachable because the ALLOWED_REVIEW_PAIRS check runs first and no role can review its own type. Reorder checks.",
+    "PII leak risk: Public /api/profile/{user_id} returns 'phone' and full role-specific 'profile_data' including Patient PHI (age, gender, blood_type, chronic_illnesses). Only 'email' is stripped. Apply field-level redaction per user_type.",
+    "2dsphere index is created on every /nearby call (best-effort try/except). Should be an idempotent startup task. Also, no input validation on radius_km (could be 0 / negative / 1e9).",
+    "ALLOWED_REVIEW_PAIRS is fine but reviews allow multiple reviews from same reviewer to same reviewee (no upsert/dedupe). Consider unique (reviewer_id, reviewee_id) or 'one review per pair' policy.",
+    "No pagination on GET /reviews/user/{user_id} or /reviews/me (hardcoded .to_list(500)). Will not scale.",
+    "GET /api/profile/{user_id} doesn't 401 unauth — wait, it DOES require auth (Depends(get_current_user)). OK. But could allow anonymous access for public discovery.",
+    "Same heuristic from iteration 1 (token.startswith('test_session_') or len(token)>200) still present — fragile token-type detection.",
+    "Old user pharmacist@test.com still has user_type='Pharmacist' (invalid after rename). No migration script applied. New tests use pharmacy@test.com instead."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_profile_location_reviews.py (new, 32 tests)"
+  ],
+  "success_rate": {"backend": "100% (32/32 Phase 2, 52/52 combined)", "frontend": "skipped per request"},
+  "test_credentials": "doctor@test.com/Doctor123! (Doctor), patient@test.com/Patient123! (Patient), pharmacy@test.com/Pharmacy123! (Pharmacy, NEW), engineer@test.com/Engineer123! (Biomedical Engineer). Note: old pharmacist@test.com/Pharmacy123! still exists with deprecated user_type='Pharmacist' from iteration 1.",
+  "seed_data_creation": "Registered pharmacy@test.com with user_type='Pharmacy' (idempotent). Updated profile_data + locations for all 4 test users. Created several reviews (Patient->Doctor, Patient->Pharmacy, Doctor->Engineer, Pharmacy->Engineer). All tests are idempotent on re-run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 endpoints (/profile, /location, /nearby, /reviews) all verified working. Test users: doctor@test.com, patient@test.com, pharmacy@test.com, engineer@test.com (all with same passwords as before). pharmacy@test.com is the NEW account; the original pharmacist@test.com still exists with deprecated user_type='Pharmacist' — main agent may want to write a migration to update it or delete it. 2dsphere index is auto-created on first /nearby call. Review role rules enforced as: Patient->{Doctor,Pharmacy}, Doctor->{Engineer}, Pharmacy->{Engineer}; all other pairs return 403. Rating must be 1-5 (400 otherwise). Author-only delete (403 otherwise). Tag aggregation in GET /reviews/user/{id} returns tag_counts dict + average_rating. Test file: /app/backend/tests/test_phase2_profile_location_reviews.py.",
+  "rca_of_the_issue": "No new bugs found. Two minor design observations: (1) The 400 'Cannot review yourself' branch is dead code because the role-pair check runs first and no role can review its own type — patient reviewing self hits 403 first. (2) Public /profile/{user_id} only strips email but still exposes phone + Patient PHI (age, blood_type, chronic_illnesses) to any authenticated user — potential privacy issue."
+}

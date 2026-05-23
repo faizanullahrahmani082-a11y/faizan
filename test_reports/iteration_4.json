@@ -1,0 +1,61 @@
+{
+  "summary": "Phase 4 backend testing complete. Created /app/backend/tests/test_phase4_files_schedule_orders_notif_commission.py with 48 tests covering Emergent Object Storage file upload/download/delete (12), Doctor weekly schedule template (6), Medicine purchase orders with 4% commission + stock + prescription validation (15), HTTP-polling notifications + auto-generation on order events (8), Commission/GMV summary for Pharmacy/Doctor/Engineer (5), plus 2 regression assertions. All 48 pass. Combined regression across all phases: 147/147 backend tests pass in 105s (20 auth+translate + 32 phase2 + 47 phase3 + 48 phase4). Real Emergent Object Storage round-trip verified (init, PUT, GET) using a tiny 1x1 PNG. Commission math (4% medicine, 12% consultation) verified end-to-end including aggregation pipeline. Cancelled orders correctly excluded from pharmacy GMV. Patient/pharmacy authorization on order status transitions enforced. Notifications auto-created on order placement AND on every status change. ?auth=token query param works on /api/files/{id} for use in <img> tags.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/files/{file_id}", "issue": "Any valid JWT/session token can download ANY file_id (no owner/recipient check). Comment in code says 'profile pics are semi-public among users' but the same endpoint serves prescription files which are PHI/sensitive medical data. Should at minimum restrict prescription-purpose files to owner + the pharmacy on a matching order."},
+      {"endpoint": "GET /api/files/{file_id}", "issue": "JWT decoding does not check signature audience/issuer; bare jwt.decode without verifying expiry independent of JWTError catch is fine, but the except clause catches the bare 'Exception' which masks unrelated bugs (e.g., db connectivity). Narrow to JWTError."},
+      {"endpoint": "POST /api/upload", "issue": "MAX_FILE_SIZE check happens AFTER full read into memory. A malicious client can POST a 5GB body and consume RAM before the 400 is returned. Use UploadFile.size or stream with chunk accumulator and abort early."},
+      {"endpoint": "POST /api/upload", "issue": "ALLOWED_IMAGE_TYPES trusts client-provided Content-Type header. No magic-byte/content sniffing. A .exe with Content-Type: image/png passes. Use python-magic or PIL.Image.open to verify."},
+      {"endpoint": "PUT /api/schedule", "issue": "No validation that start_time < end_time, no HH:MM regex on time strings, no check day_of_week is in 0..6, no overlap detection between slots on the same day. Pydantic ScheduleSlot uses bare str for times and bare int for day_of_week."},
+      {"endpoint": "POST /api/orders", "issue": "Stock decrement and order insert are NOT atomic. Race condition: two concurrent orders for last item both see stock=1, both succeed, stock goes to -1. Use findOneAndUpdate with $inc and stock>=qty filter to atomically reserve."},
+      {"endpoint": "PUT /api/orders/{id}", "issue": "Status transitions are not validated as a state machine. Pharmacy can move 'delivered' -> 'pending' or 'cancelled' -> 'shipped'. Define allowed transitions per current status."},
+      {"endpoint": "PUT /api/orders/{id}", "issue": "Cancelling an order does NOT restore the decremented medicine stock. Cancelled orders forfeit inventory."},
+      {"endpoint": "PUT /api/orders/{id}", "issue": "Pharmacy can mark patient-cancelled order as 'shipped' afterwards (no check that current status is terminal). Also no check the patient cancels only while status='pending' (they could cancel after delivery)."},
+      {"endpoint": "GET /api/commission/summary", "issue": "Doctor consultation_fee is hardcoded to $30 in code; spec says 'in real app, doctor sets'. Should read from doctor profile (and fall back to 30). Currently every doctor gets identical revenue per video appt."},
+      {"endpoint": "GET /api/commission/summary", "issue": "Doctor branch only counts appointment_type='video' and status='completed'. There is NO endpoint or mechanism in the codebase that sets status='completed' on an appointment — so doctor GMV will always be 0 in practice. Add a 'complete appointment' endpoint or auto-complete on video room close."},
+      {"endpoint": "GET /api/commission/summary", "issue": "Returns commission for current_user only — no admin view of platform-wide GMV/commission. Spec mentions 'Commission/GMV tracking' as a platform feature."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase4_files_schedule_orders_notif_commission.py",
+    "/app/backend/tests/test_phase3_appointments_medicines_chat_subs_video.py",
+    "/app/backend/tests/test_phase2_profile_location_reviews.py",
+    "/app/backend/tests/test_auth_and_translate.py",
+    "/app/test_reports/pytest/phase4_results.xml",
+    "/app/test_reports/pytest/full_results.xml"
+  ],
+  "action_items": [
+    "(HIGH) Add owner/role-based authorization to GET /api/files/{file_id} for prescription-purpose files (currently any authenticated user can read anyone's prescription image by guessing/learning a file_id).",
+    "(HIGH) Make POST /api/orders atomic: use findOneAndUpdate({medicine_id, stock>=qty}, $inc: -qty) so two concurrent orders for last unit cannot both succeed.",
+    "(HIGH) Doctor commission GMV is permanently 0 because no endpoint ever sets appointment.status='completed'. Add POST /api/appointments/{id}/complete (or auto-complete when /video/rooms ends) so consultation revenue is tracked.",
+    "(MEDIUM) Validate ScheduleSlot fields (day_of_week 0..6, HH:MM regex, start<end, no same-day overlaps).",
+    "(MEDIUM) Implement order status state-machine: pending→confirmed→shipped→delivered, plus terminal cancelled; reject illegal transitions including post-cancel updates.",
+    "(MEDIUM) Restore medicine stock when an order is cancelled.",
+    "(MEDIUM) Enforce file size limit BEFORE reading the whole body into memory; sniff actual file magic bytes — don't trust Content-Type.",
+    "(LOW) Pull doctor consultation_fee from doctor profile instead of hardcoded $30 in /commission/summary.",
+    "(LOW) Add /admin/commission/summary (or role-gated path) for platform-level GMV view."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1669 lines (up from 1207). Still exceeds the 700-line guideline. Phase 4 added another ~440 lines without modularization. Split into routers/files.py, routers/schedule.py, routers/orders.py, routers/notifications.py, routers/commission.py and a shared storage_client module.",
+    "Object storage `storage_key` is a module-level global mutated by init_storage(); if the upstream session is invalidated mid-process there is no retry/refresh — every subsequent upload returns 502 until the worker is restarted. Wrap put_object/get_object in a single retry on 401/403 that re-runs init_storage().",
+    "The `download_file` exception handler catches bare `Exception` AND `JWTError` together in one except — masks errors during db.user_sessions.find_one (e.g. mongo timeout) as 'Invalid token'. Narrow to JWTError only.",
+    "Order creation calculates `commission_amount` and `pharmacy_payout` from `medicine.price` captured at order time (good — price-locked). But there's no `currency` field anywhere; if prices become multi-currency this breaks silently.",
+    "Notification documents don't have a TTL/cleanup. db.notifications grows unboundedly. Add TTL index on created_at (e.g. 90d) or paginate + archive.",
+    "/notifications query uses `created_at: {$gt: since}` where `since` is a raw user-provided string compared lexicographically against ISO strings — works for well-formed timezone-aware ISO but breaks silently with malformed input. Validate `since` as a datetime.",
+    "Commission rates COMMISSION_RATES are constants in code, not in DB or env. Operations team cannot change rates without a deploy. Consider storing in a `platform_config` collection.",
+    "/api/files/{file_id} returns the raw bytes with `record.content_type` but does NOT set Content-Disposition or Cache-Control. Browsers will not cache profile pictures, multiplying object-storage GETs on every page refresh.",
+    "Engineer role is allowed through /commission/summary (returns {gmv: 0}). Either restrict to Pharmacy+Doctor (consistent with the 'Not applicable' 403) or document equipment-listing commissions for engineers if planned."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase4_files_schedule_orders_notif_commission.py (new, 48 tests, all pass)"
+  ],
+  "success_rate": {"backend": "100% (48/48 phase4, 147/147 combined)", "frontend": "skipped per request"},
+  "test_credentials": "doctor@test.com/Doctor123! (Doctor), patient@test.com/Patient123! (Patient), pharmacy@test.com/Pharmacy123! (Pharmacy), engineer@test.com/Engineer123! (Biomedical Engineer). All endpoints are idempotent on re-run; tests register users if absent.",
+  "seed_data_creation": "Each run creates: 1 profile-picture file (replaces patient.picture), 2-3 prescription/general files (one soft-deleted), 1 doctor schedule (overwritten), 2 medicines (TEST_Paracetamol_<uuid>, TEST_Antibiotic_<uuid>) — these accumulate per run but are harmless. 2 orders (one delivered, one cancelled). Auto-creates 4 notifications per run (1 new_order + 3 order_update). No teardown — pharmacy commission GMV will grow ~$100/run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All Phase 4 endpoints work end-to-end including REAL Emergent Object Storage (init/put/get) — EMERGENT_LLM_KEY in backend/.env is valid for storage too. Tests use a 1x1 PNG (TINY_PNG hex constant) so storage uploads are fast. Commission math: pharmacy uses Mongo aggregate pipeline ($sum subtotal/commission/payout where status != cancelled), doctor counts completed video appointments * $30 * 12%. KEY GOTCHA: no endpoint in the codebase sets appointment.status='completed' so doctor.completed_consultations is always 0 — tests assert the shape, not a non-zero value. /api/files/{file_id} accepts BOTH Authorization: Bearer <token> AND ?auth=<token> query param (needed for <img src=>). The `auth` token verification is permissive — any valid token reads any file. Patient order cancellation does NOT restore stock. Combined regression file count: 4 test files, 147 tests, ~105s.",
+  "rca_of_the_issue": "Not a single bug RCA this iteration — all reported items are pre-existing design/security gaps surfaced by review, not test failures. Top RCA: Doctor commission GMV permanently zero. Root cause: /commission/summary line 1605-1609 counts db.appointments where status='completed', but no endpoint in server.py ever updates an appointment to status='completed'. The set of writable statuses on /appointments is {pending, confirmed, cancelled} (from earlier phase). Fix: add POST /api/appointments/{id}/complete (doctor-only) that flips status, OR auto-complete when the linked video room reaches end_time, OR allow doctor to PATCH any appointment to 'completed' from /appointments/{id} update endpoint. Reproduction: doctor video-appointments → /commission/summary returns gmv=0 even after 100 calls."
+}

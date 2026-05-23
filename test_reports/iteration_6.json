@@ -1,0 +1,80 @@
+{
+  "summary": "Phase 6 (FINAL) backend testing complete. Created /app/backend/tests/test_phase6_encryption_anon_reviews_featured_quote.py with 20 tests covering: (1) Patient PHI (blood_type + chronic_illnesses) encrypted at rest with AES-256-GCM 'enc-v1:' prefix — verified by raw Motor query against db.users.profile_data + plaintext not present in raw doc + API response decrypted; (2) GET /profile decrypts for owner; (3) GET /profile/{patient_id} as non-owner returns profile_data == {} (existing redaction holds); (4) Idempotency — re-PUTing decrypted PHI re-encrypts ONCE (no double 'enc-v1:enc-v1:' wrap), and PUT /profile {name only} preserves encrypted PHI without corruption; (5) AI chat messages encrypted at rest in db.chat_sessions.messages[*].content (both 'user' and 'assistant' roles), decrypted on GET /chat/{id} for owner, 403 for non-owner; (6) Review comments encrypted at rest, decrypted on POST response + GET /reviews/user/{id}; (7) NEW GET /reviews/public/{user_id} — reviewer_id/reviewer_name stripped, reviewer_type forced to 'Anonymous', sorted by created_at desc, decrypted comments, 404 on unknown user; (8) Appointment notes encrypt on POST + PUT, decrypt in responses, raw doc never contains plaintext; (9) Featured Quote: 402 when doctor not Premium, 403 for Patient role, 200 on Doctor with active sub, 404 for review not belonging to caller, 400 for rating<4 (3-star), DELETE clears featured_quote → public endpoint returns null; (10) GET /reviews/public/{doctor_id} returns populated featured_quote with reviewer_type='Anonymous' + no reviewer_id/name + decrypted comment. All 20/20 Phase 6 tests pass. Full regression: 190/190 across all phases in 132s (20 auth+translate + 32 phase2 + 47 phase3 + 48 phase4 + 23 phase5 + 20 phase6). Encryption is fully transparent to existing callers (no prior tests broke).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "PUT /api/reviews/featured-quote/{review_id}",
+        "issue": "Premium check uses user.is_verified flag rather than verifying an actually-active, non-expired subscription in db.subscriptions. If a sub is manually flipped or if featured_until passes without the cron-cancel running, is_verified can be stale. Prefer reading db.subscriptions where is_active=true AND expires_at>now()."
+      },
+      {
+        "endpoint": "PUT /api/reviews/featured-quote/{review_id}",
+        "issue": "No max-length / sanitization on the featured comment when displayed publicly. A patient can submit an arbitrarily long or HTML-laced comment; doctor features it; it is served decrypted via /reviews/public/{id}. Add a sanitize/escape step or cap comment length at write time."
+      },
+      {
+        "endpoint": "GET /api/reviews/public/{user_id}",
+        "issue": "average_rating is computed from ALL reviews via a second find() (max 500), but reviews list is limited to `limit` (default 20). For users with >500 reviews the average is silently wrong. Use a $group aggregate for the average instead of in-memory sum on a capped list."
+      },
+      {
+        "endpoint": "GET /api/reviews/public/{user_id}",
+        "issue": "tag_counts is computed only over the (limit-sized) reviews returned, not the full review set. With limit=20 and many reviews, tag distribution is biased toward the latest 20. Compute via $unwind+$group aggregate."
+      },
+      {
+        "endpoint": "PUT /api/profile (Patient)",
+        "issue": "encrypt_patient_profile only encrypts blood_type and chronic_illnesses. If the PatientProfile pydantic model grows (e.g., allergies, medications, family_history), they will silently leak unencrypted at rest. Drive the PHI fieldset from a single declaration (PATIENT_PHI_FIELDS already exists at line 85 but encrypt_patient_profile hardcodes the two field names instead of iterating PATIENT_PHI_FIELDS)."
+      },
+      {
+        "endpoint": "POST /api/chat/{id}/message",
+        "issue": "On LlmChat failure the route raises 500 — but ONLY AFTER the request has been accepted. Both the user message and the AI response are persisted together; if the LLM call throws after partial work (e.g., network blip post-response), nothing is saved. Acceptable, but consider persisting the user message before the LLM call to avoid losing the patient's input on failure."
+      },
+      {
+        "endpoint": "GET /api/profile/{user_id}",
+        "issue": "PHI redaction is keyed on user_type == 'Patient'. If a user converts their profile to Patient after entering data as another role, no scrubbing happens for the OLD fields — and conversely, a Patient who switches role will leak their previously-stored encrypted blood_type to the new public view (encrypted, but the field name itself signals PHI). Lock role at registration or drop role-specific fields on role change."
+      },
+      {
+        "endpoint": "encrypt_phi / decrypt_phi",
+        "issue": "decrypt_phi returns '[DECRYPTION_ERROR]' on any exception (wrong key, truncated ciphertext). This poisons the response silently. Should return None and log the error so a monitoring alert can fire on key-rotation mistakes."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase6_encryption_anon_reviews_featured_quote.py",
+    "/app/backend/tests/test_phase5_atomic_orders_doctor_fee_monthly_reports.py",
+    "/app/backend/tests/test_phase4_files_schedule_orders_notif_commission.py",
+    "/app/backend/tests/test_phase3_appointments_medicines_chat_subs_video.py",
+    "/app/backend/tests/test_phase2_profile_location_reviews.py",
+    "/app/backend/tests/test_auth_and_translate.py",
+    "/app/test_reports/pytest/phase6_results.xml",
+    "/app/test_reports/pytest/full_results.xml"
+  ],
+  "action_items": [
+    "(MEDIUM) Featured-quote eligibility should re-check active subscription in db.subscriptions, not just user.is_verified — guards against stale flag.",
+    "(MEDIUM) Sanitize/escape featured-quote comment before serving via /reviews/public/{id}; cap comment length at POST /reviews time (e.g., 2000 chars).",
+    "(MEDIUM) /reviews/public/{user_id}: compute average_rating and tag_counts via Mongo aggregate over the FULL review set, not the limit-capped slice.",
+    "(LOW) Drive PHI encryption from PATIENT_PHI_FIELDS dict instead of hardcoded field names in encrypt_patient_profile/decrypt_patient_profile to prevent future leaks when the patient model grows.",
+    "(LOW) decrypt_phi should return None + log on failure, not '[DECRYPTION_ERROR]' poison string — silent error masking is dangerous for PHI."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 2161 lines (up from 1965). The encryption helpers (lines 36-108), reviews block (lines 653-823), and featured-quote endpoints all live in one monolith. Extract: /app/backend/crypto.py (AES helpers + PATIENT_PHI_FIELDS driver), /app/backend/routers/reviews.py, /app/backend/routers/featured_quote.py. The 700-line guideline is now ~3x over.",
+    "encrypt_patient_profile and decrypt_patient_profile both hardcode the two PHI field names ('blood_type', 'chronic_illnesses') in if-blocks. PATIENT_PHI_FIELDS dict at line 85 already declares the fieldset+type — refactor to iterate that dict so adding a new PHI field is a one-line change.",
+    "decrypt_phi returns '[DECRYPTION_ERROR]' on exception (line 68). This is a silent poison string that flows through APIs — a frontend could render literal '[DECRYPTION_ERROR]' to users. Prefer raising or returning None + structured logging so monitoring/alerts catch key-rotation issues.",
+    "encrypt_phi/decrypt_phi pass through values that 'don't look like enc-v1:' as plaintext (line 62). Backward-compat is fine, but means a corrupted ciphertext that lost its prefix will be silently served as garbled UTF-8 instead of failing loudly.",
+    "Featured Quote uses user.is_verified as the Premium gate (line 796). is_verified is set on subscribe and unset on cancel, but if featured_until passes and no cron runs, the flag remains true. Verify against an active+unexpired db.subscriptions doc directly.",
+    "GET /reviews/public/{user_id}: average_rating is computed via a second find() bounded at to_list(500), while reviews list is bounded at `limit` (default 20). For >500 reviews the average is silently truncated. Use a single $group aggregate.",
+    "Chat encryption: messages are encrypted but session 'title' (line 1129) is stored plaintext. A title like 'Symptom Check — chest pain' is itself PHI. Either encrypt title or warn users not to enter PHI in titles.",
+    "Appointment encryption: 'notes' is encrypted but doctor_name and patient_name (lines 944, 946) are stored plaintext alongside the encrypted notes. The association of plaintext patient_name + appointment is also PHI under HIPAA. Acceptable trade-off because reviewer_id is needed for joins, but worth a security review.",
+    "ENCRYPTION_KEY is loaded from .env at module import. There is no key-rotation path — re-encrypting existing data with a new key requires a one-shot migration script that does not exist. Document the rotation procedure or implement a (kid, key) versioned format (the 'enc-v1:' prefix is ready for this — just bump to 'enc-v2:' and keep both keys during rotation).",
+    "No rate limiting on POST /chat/{id}/message. LlmChat call is paid (Emergent LLM key). A malicious authenticated user can exhaust the budget. Add per-user/minute throttle."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase6_encryption_anon_reviews_featured_quote.py (NEW, 20 tests, all pass)"
+  ],
+  "success_rate": {"backend": "100% (20/20 phase6, 190/190 combined)", "frontend": "skipped per request"},
+  "test_credentials": "doctor@test.com/Doctor123!, patient@test.com/Patient123!, pharmacy@test.com/Pharmacy123! (user_type 'Pharmacy', not 'Pharmacist'), engineer@test.com/Engineer123! (Biomedical Engineer). All idempotent on re-run.",
+  "seed_data_creation": "Per run: 1 chat_session with 2 encrypted messages, 2-3 new reviews (one 5-star patient->doctor, one 3-star patient->pharmacy for the rating<4 test), 1 appointment with encrypted notes, 2-3 subscription docs (doctor + pharmacy subscribe/cancel cycles). Doctor + pharmacy end with is_verified=False after teardown. Patient profile_data ends with encrypted blood_type + chronic_illnesses set (intentionally — exercises decrypt path on next run). No teardown of reviews/chat/appointments; cumulative growth ~3 reviews + 1 chat + 1 appt per run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 6 is the FINAL phase. Encryption is now in place for all PHI write/read paths. Key facts: (1) ENC_PREFIX = 'enc-v1:' marks encrypted strings, (2) encrypt_phi is idempotent (already-prefixed input passes through), (3) decrypt_phi tolerates legacy plaintext (no prefix → returned as-is) so DB migration is not required, (4) Featured Quote requires user.is_verified=True (set by POST /subscriptions/subscribe), only Doctor/Pharmacy, only 4-5★ reviews where reviewee_id==current_user, (5) GET /reviews/public/{user_id} is the ONLY endpoint that anonymizes — /reviews/user/{id} still returns reviewer_id/name (used for owner-facing dashboards). For direct DB checks use motor: client=AsyncIOMotorClient(MONGO_URL); db=client[DB_NAME]; doc=await db.<col>.find_one({...}). The test file has a helper _get_raw_doc(collection, query) already. The patient_chat fixture relies on Emergent LLM key — slow on cold start (~60s), test now uses 120s timeout + 1 retry. server.py is 2161 lines, still desperately needs a router split (3x over 700-line guideline). No frontend changes were tested.",
+  "rca_of_the_issue": "Single transient failure in initial run: patient_chat fixture timed out at 60s on the LLM call (Emergent LLM cold-start). Bumped timeout to 120s with one retry. Server code was correct; test was too aggressive on timeout. After fix: 20/20 phase6 + 190/190 combined pass."
+}
