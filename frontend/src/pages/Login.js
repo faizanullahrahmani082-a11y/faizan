@@ -9,7 +9,7 @@ import { Mail, Lock, Eye, EyeOff, ArrowRight, CheckCircle2, Stethoscope, Bot, Pi
 import axios from 'axios';
 import { toast } from 'sonner';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://127.0.0.1:8000';
 const API = `${BACKEND_URL}/api`;
 
 const FEATURES = [

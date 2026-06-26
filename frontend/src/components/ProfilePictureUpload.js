@@ -32,9 +32,10 @@ const ProfilePictureUpload = ({ user, onUpdate, size = 'md' }) => {
   };
 
   const token = localStorage.getItem('token');
+  const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://127.0.0.1:8000';
   const imageUrl = user?.picture
     ? (user.picture.startsWith('/api')
-        ? `${process.env.REACT_APP_BACKEND_URL}${user.picture}?auth=${token}`
+        ? `${backendUrl}${user.picture}?auth=${token}`
         : user.picture)
     : null;
 
