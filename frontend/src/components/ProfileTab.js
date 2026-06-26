@@ -7,7 +7,7 @@ import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Badge } from './ui/badge';
-import { Stethoscope, Building2, Clock, DollarSign, Award, Phone, User, FileText, BadgeCheck, MapPin } from 'lucide-react';
+import { Stethoscope, Building2, Clock, DollarSign, Award, Phone, User, FileText, BadgeCheck, MapPin, Lock, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { CURRENCIES } from '../utils/currency';
 import api from '../api';
 import { toast } from 'sonner';
@@ -49,6 +49,40 @@ const ProfileTab = ({ user, onUpdate }) => {
   const [clinicAddress, setClinicAddress] = useState(pd.clinic_address || '');
 
   const isDoctor = user?.user_type === 'Doctor';
+
+  const [currentPw, setCurrentPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [showCurrentPw, setShowCurrentPw] = useState(false);
+  const [showNewPw, setShowNewPw] = useState(false);
+  const [changingPw, setChangingPw] = useState(false);
+  const [resendingVerif, setResendingVerif] = useState(false);
+
+  const handleChangePassword = async () => {
+    if (newPw !== confirmPw) { toast.error(t('passwordsNoMatch')); return; }
+    setChangingPw(true);
+    try {
+      await api.put('/auth/password', { current_password: currentPw, new_password: newPw });
+      toast.success(t('passwordChanged'));
+      setCurrentPw(''); setNewPw(''); setConfirmPw('');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || t('error'));
+    } finally {
+      setChangingPw(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    setResendingVerif(true);
+    try {
+      await api.post('/auth/resend-verification');
+      toast.success(t('verificationSent'));
+    } catch (e) {
+      toast.error(e.response?.data?.detail || t('error'));
+    } finally {
+      setResendingVerif(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -212,6 +246,96 @@ const ProfileTab = ({ user, onUpdate }) => {
           </CardContent>
         </Card>
       )}
+
+      {/* Email verification banner */}
+      {user && !user.is_email_verified && (
+        <Card className="border-yellow-300 bg-yellow-50 dark:bg-yellow-900/20 dark:border-yellow-700">
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-center gap-2 text-yellow-800 dark:text-yellow-200">
+                <ShieldCheck className="w-4 h-4 shrink-0" />
+                <p className="text-sm font-medium">{t('emailNotVerified')}</p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleResendVerification}
+                disabled={resendingVerif}
+                className="border-yellow-400 text-yellow-800 dark:text-yellow-200 hover:bg-yellow-100"
+              >
+                {resendingVerif ? '...' : t('resendVerification')}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Change password */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-start text-base">
+            <Lock className="w-4 h-4" /> {t('changePassword')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid md:grid-cols-3 gap-4">
+            <div>
+              <Label className="text-start block mb-2">{t('currentPassword')}</Label>
+              <div className="relative">
+                <Input
+                  type={showCurrentPw ? 'text' : 'password'}
+                  value={currentPw}
+                  onChange={e => setCurrentPw(e.target.value)}
+                  className="pr-9"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCurrentPw(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                >
+                  {showCurrentPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+            <div>
+              <Label className="text-start block mb-2">{t('newPassword')}</Label>
+              <div className="relative">
+                <Input
+                  type={showNewPw ? 'text' : 'password'}
+                  value={newPw}
+                  onChange={e => setNewPw(e.target.value)}
+                  className="pr-9"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPw(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                >
+                  {showNewPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+            <div>
+              <Label className="text-start block mb-2">{t('confirmPassword')}</Label>
+              <Input
+                type="password"
+                value={confirmPw}
+                onChange={e => setConfirmPw(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              onClick={handleChangePassword}
+              disabled={changingPw || !currentPw || !newPw || !confirmPw}
+              variant="outline"
+            >
+              <Lock className="w-4 h-4 me-2" />
+              {changingPw ? t('saving') : t('changePassword')}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="flex justify-end">
         <Button onClick={handleSave} disabled={saving} size="lg">

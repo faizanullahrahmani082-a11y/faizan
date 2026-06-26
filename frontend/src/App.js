@@ -10,6 +10,7 @@ import VideoCall from './pages/VideoCall';
 import AdminDashboard from './pages/AdminDashboard';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import VerifyEmail from './pages/VerifyEmail';
 import NotFound from './pages/NotFound';
 import '@/App.css';
 
@@ -31,6 +32,7 @@ function AppRouter() {
       <Route path="/admin" element={<AdminDashboard />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password/:token" element={<ResetPassword />} />
+      <Route path="/verify-email/:token" element={<VerifyEmail />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );

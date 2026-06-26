@@ -3,7 +3,9 @@ import { useLanguage } from '../LanguageContext';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Stethoscope, Wrench, Send, Plus, AlertCircle } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Textarea } from './ui/textarea';
+import { Stethoscope, Wrench, Send, AlertCircle, Languages, ArrowRight, Copy } from 'lucide-react';
 import api from '../api';
 import { toast } from 'sonner';
 
@@ -15,6 +17,38 @@ const AIChatTab = ({ user }) => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
+
+  // Translator state
+  const [activeMode, setActiveMode] = useState('chat'); // 'chat' | 'translate'
+  const [translateText, setTranslateText] = useState('');
+  const [translateFrom, setTranslateFrom] = useState('en');
+  const [translateTo, setTranslateTo] = useState('fa');
+  const [translateResult, setTranslateResult] = useState('');
+  const [translating, setTranslating] = useState(false);
+
+  const LANGS = [
+    { code: 'en', label: 'English' },
+    { code: 'fa', label: 'فارسی (Dari)' },
+    { code: 'ps', label: 'پښتو (Pashto)' },
+  ];
+
+  const handleTranslate = async () => {
+    if (!translateText.trim()) return;
+    setTranslating(true);
+    setTranslateResult('');
+    try {
+      const res = await api.post('/translate', {
+        text: translateText,
+        source_lang: translateFrom,
+        target_lang: translateTo,
+      });
+      setTranslateResult(res.data.translation);
+    } catch (e) {
+      toast.error(t('error'));
+    } finally {
+      setTranslating(false);
+    }
+  };
 
   const isEngineerOrPharmacy = user?.user_type === 'Biomedical Engineer' || user?.user_type === 'Pharmacy' || user?.user_type === 'Doctor';
 
@@ -72,7 +106,97 @@ const AIChatTab = ({ user }) => {
   };
 
   return (
-    <div className="grid md:grid-cols-3 gap-4">
+    <div className="space-y-4">
+      {/* Mode switcher */}
+      <div className="flex gap-2">
+        <Button
+          variant={activeMode === 'chat' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setActiveMode('chat')}
+        >
+          <Stethoscope className="w-4 h-4 me-1.5" /> {t('aiAssistant')}
+        </Button>
+        <Button
+          variant={activeMode === 'translate' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setActiveMode('translate')}
+          data-testid="translate-mode-btn"
+        >
+          <Languages className="w-4 h-4 me-1.5" /> {t('medicalTranslate')}
+        </Button>
+      </div>
+
+      {/* ── TRANSLATE PANEL ── */}
+      {activeMode === 'translate' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-start text-base">
+              <Languages className="w-4 h-4" /> {t('medicalTranslate')}
+            </CardTitle>
+            <p className="text-xs text-muted-foreground text-start">{t('aiDisclaimer')}</p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Language selectors */}
+            <div className="flex items-center gap-3">
+              <Select value={translateFrom} onValueChange={setTranslateFrom}>
+                <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {LANGS.map(l => <SelectItem key={l.code} value={l.code}>{l.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <ArrowRight className="w-4 h-4 text-muted-foreground shrink-0" />
+              <Select value={translateTo} onValueChange={setTranslateTo}>
+                <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {LANGS.map(l => <SelectItem key={l.code} value={l.code}>{l.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Input */}
+            <div>
+              <Textarea
+                placeholder={t('enterTextToTranslate')}
+                value={translateText}
+                onChange={e => setTranslateText(e.target.value)}
+                rows={5}
+                data-testid="translate-input"
+              />
+            </div>
+
+            <Button
+              onClick={handleTranslate}
+              disabled={translating || !translateText.trim()}
+              className="w-full"
+              data-testid="translate-btn"
+            >
+              <Languages className="w-4 h-4 me-2" />
+              {translating ? t('translating') : t('translate')}
+            </Button>
+
+            {/* Result */}
+            {translateResult && (
+              <div className="rounded-lg border bg-muted/40 p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t('translationResult')}</p>
+                  <button
+                    type="button"
+                    onClick={() => { navigator.clipboard.writeText(translateResult); toast.success('Copied!'); }}
+                    className="p-1 rounded hover:bg-muted transition-colors"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                  </button>
+                </div>
+                <p className="text-sm whitespace-pre-wrap leading-relaxed" data-testid="translate-result">{translateResult}</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── CHAT PANEL ── */}
+      {activeMode === 'chat' && (
+      <div className="grid md:grid-cols-3 gap-4">
       <Card className="md:col-span-1">
         <CardHeader>
           <CardTitle className="text-start">{t('aiAssistant')}</CardTitle>
@@ -162,6 +286,8 @@ const AIChatTab = ({ user }) => {
           )}
         </CardContent>
       </Card>
+    </div>
+      )}
     </div>
   );
 };

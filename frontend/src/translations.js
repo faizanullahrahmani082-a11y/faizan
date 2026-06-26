@@ -152,6 +152,44 @@ export const translations = {
     acceptTicket: 'Accept', ticketAccepted: 'Ticket accepted!', ticketStatus: 'Status',
     open: 'Open', accepted: 'Accepted', in_progress: 'In Progress', ticketCompleted: 'Completed',
     engineerNotes: 'Engineer Notes', noTickets: 'No tickets found',
+
+    // Appointment cancel confirm
+    noOrders: 'No orders yet',
+    all: 'All',
+
+    // Password change
+    changePassword: 'Change Password',
+    currentPassword: 'Current Password',
+    passwordChanged: 'Password changed successfully!',
+
+    // Email verification
+    emailNotVerified: 'Your email address is not verified.',
+    resendVerification: 'Resend verification email',
+    verificationSent: 'Verification email sent! Check your inbox.',
+    verifyingEmail: 'Verifying your email...',
+    emailVerified: 'Email verified successfully!',
+    emailVerifiedDesc: 'Your account is now fully verified. You can log in.',
+    emailVerificationFailed: 'Verification link is invalid or expired.',
+
+    // Medical translator
+    medicalTranslate: 'Medical Translator',
+    translate: 'Translate',
+    translating: 'Translating...',
+    translationResult: 'Translation',
+    enterTextToTranslate: 'Enter medical text to translate...',
+    confirmCancel: 'Cancel Appointment',
+    confirmCancelMsg: 'Are you sure you want to cancel this appointment? This action cannot be undone.',
+
+    // Orders
+    viewPrescription: 'View Prescription',
+
+    // Overview card descriptions
+    aiAssistantDesc: 'AI symptom checker & device fault helper powered by Gemini',
+    medicinesManageDesc: 'Manage your medicine catalog',
+    medicinesBrowseDesc: 'Search medicines from nearby pharmacies',
+    mapDesc: 'Find pharmacies & doctors on the map',
+    subscriptionDesc: 'Get verified badge & featured listing',
+    shareGpsDesc: 'Share your GPS location with the platform',
   },
 
   fa: {
@@ -284,6 +322,36 @@ export const translations = {
     acceptTicket: 'قبول', ticketAccepted: 'تیکت پذیرفته شد!', ticketStatus: 'وضعیت',
     open: 'باز', accepted: 'پذیرفته شده', in_progress: 'در حال انجام', ticketCompleted: 'تکمیل شده',
     engineerNotes: 'یادداشت مهندس', noTickets: 'تیکتی یافت نشد',
+
+    noOrders: 'هیچ سفارشی وجود ندارد',
+    all: 'همه',
+
+    changePassword: 'تغییر رمز عبور',
+    currentPassword: 'رمز عبور فعلی',
+    passwordChanged: 'رمز عبور با موفقیت تغییر یافت!',
+
+    emailNotVerified: 'آدرس ایمیل شما تأیید نشده است.',
+    resendVerification: 'ارسال مجدد ایمیل تأیید',
+    verificationSent: 'ایمیل تأیید ارسال شد! صندوق ورودی خود را بررسی کنید.',
+    verifyingEmail: 'در حال تأیید ایمیل...',
+    emailVerified: 'ایمیل با موفقیت تأیید شد!',
+    emailVerifiedDesc: 'حساب شما اکنون تأیید شده است. می‌توانید وارد شوید.',
+    emailVerificationFailed: 'لینک تأیید نامعتبر یا منقضی شده است.',
+
+    medicalTranslate: 'ترجمه پزشکی',
+    translate: 'ترجمه',
+    translating: 'در حال ترجمه...',
+    translationResult: 'ترجمه',
+    enterTextToTranslate: 'متن پزشکی را برای ترجمه وارد کنید...',
+    confirmCancel: 'لغو نوبت',
+    confirmCancelMsg: 'آیا مطمئن هستید که می‌خواهید این نوبت را لغو کنید؟ این عمل قابل بازگشت نیست.',
+    viewPrescription: 'مشاهده نسخه',
+    aiAssistantDesc: 'بررسی علائم و تشخیص خرابی دستگاه با هوش مصنوعی جمینی',
+    medicinesManageDesc: 'مدیریت کاتالوگ داروی خود',
+    medicinesBrowseDesc: 'جستجوی دارو از داروخانه‌های نزدیک',
+    mapDesc: 'داروخانه‌ها و دکترها را روی نقشه پیدا کنید',
+    subscriptionDesc: 'نشان تأیید و نمایش ویژه دریافت کنید',
+    shareGpsDesc: 'موقعیت GPS خود را با پلتفرم به اشتراک بگذارید',
   },
 
   ps: {
@@ -416,5 +484,35 @@ export const translations = {
     acceptTicket: 'قبول', ticketAccepted: 'ټیکټ قبول شو!', ticketStatus: 'حالت',
     open: 'خلاص', accepted: 'قبول شوی', in_progress: 'روان دی', ticketCompleted: 'بشپړ شوی',
     engineerNotes: 'د انجینر یادښتونه', noTickets: 'هیڅ ټیکټ ونه موندل شو',
+
+    noOrders: 'هیڅ فرمایش نشته',
+    all: 'ټول',
+
+    changePassword: 'پټ نوم بدلول',
+    currentPassword: 'اوسنی پټ نوم',
+    passwordChanged: 'پټ نوم بریالیتوب سره بدل شو!',
+
+    emailNotVerified: 'ستاسو د ایمیل پته تایید نه ده شوې.',
+    resendVerification: 'د تایید ایمیل بیا ولیږئ',
+    verificationSent: 'د تایید ایمیل ولیږل شو! خپل انباکس وګورئ.',
+    verifyingEmail: 'ایمیل تایید کیږي...',
+    emailVerified: 'ایمیل بریالیتوب سره تایید شو!',
+    emailVerifiedDesc: 'ستاسو حساب اوس بشپړ تایید شوی. تاسو ننوتلی شئ.',
+    emailVerificationFailed: 'د تایید لینک ناسم یا پای ته رسیدلی دی.',
+
+    medicalTranslate: 'طبي ژباړه',
+    translate: 'ژباړل',
+    translating: 'ژباړل کیږي...',
+    translationResult: 'ژباړه',
+    enterTextToTranslate: 'د ژباړلو لپاره طبي متن دننه کړئ...',
+    confirmCancel: 'ګمارنه لغوه کړئ',
+    confirmCancelMsg: 'ایا تاسو ډاډه یاست چې غواړئ دا ګمارنه لغوه کړئ؟ دا کار بیرته نه شي اخیستل.',
+    viewPrescription: 'نسخه وګورئ',
+    aiAssistantDesc: 'د Gemini AI سره د نښو معاینه او د وسیلې ستونزه تشخیص',
+    medicinesManageDesc: 'خپل د درملو کاتالوګ اداره کړئ',
+    medicinesBrowseDesc: 'د نږدې درملتونونو له درملو لټون وکړئ',
+    mapDesc: 'درملتونونه او ډاکټران نقشه کې ومومئ',
+    subscriptionDesc: 'د تایید نښه او ځانګړی نمایش ترلاسه کړئ',
+    shareGpsDesc: 'خپل GPS موقعیت د پلیټ فارم سره شریک کړئ',
   }
 };

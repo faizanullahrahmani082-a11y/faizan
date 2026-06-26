@@ -257,22 +257,22 @@ const Dashboard = () => {
         </Card>
         <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveTab('ai')}>
           <CardHeader><CardTitle className="text-start text-base flex items-center gap-2"><Bot className="w-4 h-4" /> {t('aiAssistant')}</CardTitle></CardHeader>
-          <CardContent className="text-start text-sm text-muted-foreground">AI symptom checker & device fault helper powered by Gemini.</CardContent>
+          <CardContent className="text-start text-sm text-muted-foreground">{t('aiAssistantDesc')}</CardContent>
         </Card>
         <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveTab('medicines')}>
           <CardHeader><CardTitle className="text-start text-base flex items-center gap-2"><Pill className="w-4 h-4" /> {t('medicines')}</CardTitle></CardHeader>
           <CardContent className="text-start text-sm text-muted-foreground">
-            {userType === 'Pharmacy' ? 'Manage your medicine catalog.' : 'Search medicines from nearby pharmacies.'}
+            {userType === 'Pharmacy' ? t('medicinesManageDesc') : t('medicinesBrowseDesc')}
           </CardContent>
         </Card>
         <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveTab('map')}>
           <CardHeader><CardTitle className="text-start text-base flex items-center gap-2"><MapPin className="w-4 h-4" /> {t('map')}</CardTitle></CardHeader>
-          <CardContent className="text-start text-sm text-muted-foreground">Find 24/7 pharmacies &amp; doctors on the map.</CardContent>
+          <CardContent className="text-start text-sm text-muted-foreground">{t('mapDesc')}</CardContent>
         </Card>
         {canSubscribe && (
           <Card className="cursor-pointer hover:shadow-md transition-shadow border-primary/30 bg-gradient-to-br from-primary/5 to-secondary/5" onClick={() => setActiveTab('subscription')}>
             <CardHeader><CardTitle className="text-start text-base flex items-center gap-2"><Crown className="w-4 h-4 text-primary" /> {t('subscription')}</CardTitle></CardHeader>
-            <CardContent className="text-start text-sm text-muted-foreground">Get verified badge &amp; featured listing.</CardContent>
+            <CardContent className="text-start text-sm text-muted-foreground">{t('subscriptionDesc')}</CardContent>
           </Card>
         )}
         <Card className="cursor-pointer hover:shadow-md transition-shadow border-dashed" onClick={handleUseMyLocation}>
@@ -280,7 +280,7 @@ const Dashboard = () => {
             <Navigation className={`w-6 h-6 text-primary shrink-0 ${geoLoading ? 'animate-pulse' : ''}`} />
             <div>
               <p className="font-medium text-sm">{t('useMyLocation')}</p>
-              <p className="text-xs text-muted-foreground">{geoLoading ? t('detectingLocation') : 'Share GPS with the platform'}</p>
+              <p className="text-xs text-muted-foreground">{geoLoading ? t('detectingLocation') : t('shareGpsDesc')}</p>
             </div>
           </CardContent>
         </Card>

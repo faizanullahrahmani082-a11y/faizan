@@ -3,8 +3,8 @@ import { useLanguage } from '../LanguageContext';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { ShoppingCart, Package, DollarSign, TrendingUp } from 'lucide-react';
-import api from '../api';
+import { ShoppingCart, Package, DollarSign, TrendingUp, FileText } from 'lucide-react';
+import api, { API } from '../api';
 import { toast } from 'sonner';
 
 const STATUS_COLORS = {
@@ -85,25 +85,40 @@ const OrdersTab = ({ user }) => {
         </CardHeader>
         <CardContent>
           {orders.length === 0 ? (
-            <p className="text-muted-foreground text-center py-8">No orders yet</p>
+            <p className="text-muted-foreground text-center py-8">{t('noOrders')}</p>
           ) : (
             <div className="space-y-3">
               {orders.map(o => (
                 <div key={o.order_id} className="border rounded-lg p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 text-start" data-testid={`order-${o.order_id}`}>
                   <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className="font-medium">{o.medicine_name} × {o.quantity}</span>
                       <Badge className={STATUS_COLORS[o.status]}>{t(o.status)}</Badge>
                     </div>
                     <div className="text-sm text-muted-foreground">
-                      {isPharmacy ? `From: ${o.patient_name}` : `From: ${o.pharmacy_name}`}
+                      {isPharmacy ? o.patient_name : o.pharmacy_name}
                     </div>
-                    <div className="text-sm">
-                      ${o.subtotal?.toFixed(2)} {isPharmacy && ` (payout: $${o.pharmacy_payout?.toFixed(2)})`}
+                    <div className="text-sm font-medium">
+                      ${o.subtotal?.toFixed(2)}
+                      {isPharmacy && <span className="text-xs text-muted-foreground font-normal ml-2">(payout: ${o.pharmacy_payout?.toFixed(2)})</span>}
                     </div>
-                    {o.delivery_address && <p className="text-xs text-muted-foreground mt-1">📍 {o.delivery_address}</p>}
+                    {o.delivery_address && (
+                      <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                        <Package className="w-3 h-3" /> {o.delivery_address}
+                      </p>
+                    )}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap justify-end">
+                    {o.prescription_file_id && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => window.open(`${API}/files/${o.prescription_file_id}?auth=${localStorage.getItem('token')}`, '_blank')}
+                        data-testid={`view-prescription-${o.order_id}`}
+                      >
+                        <FileText className="w-3.5 h-3.5 me-1" /> {t('viewPrescription')}
+                      </Button>
+                    )}
                     {isPharmacy && o.status === 'pending' && (
                       <Button size="sm" onClick={() => updateStatus(o.order_id, 'confirmed')} data-testid={`confirm-order-${o.order_id}`}>{t('confirm')}</Button>
                     )}

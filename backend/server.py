@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, status, UploadFile, File, Query, Header
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -290,6 +291,15 @@ class PasswordResetConfirm(BaseModel):
     new_password: str
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
+class EmailVerifyToken(BaseModel):
+    token: str
+
+
 # ============= MEDICAL RECORD MODELS =============
 class MedicalRecordUpdate(BaseModel):
     allergies: Optional[List[str]] = None
@@ -417,6 +427,32 @@ async def register(user_data: UserRegister):
 
     await db.users.insert_one(user_doc)
     user_doc.pop("_id", None)
+
+    # Send email verification token (non-blocking)
+    try:
+        verification_token = uuid.uuid4().hex
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+        await db.email_verifications.insert_one({
+            "user_id": user_id,
+            "email": user_data.email,
+            "token": verification_token,
+            "expires_at": expires_at,
+            "used": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3008")
+        verify_url = f"{frontend_url}/verify-email/{verification_token}"
+        html = f"""
+        <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:24px">
+          <h2 style="color:#16a34a">Welcome to Afghan Health Portal</h2>
+          <p>Hello {user_data.name},</p>
+          <p>Please verify your email address by clicking the button below (link valid 24 hours):</p>
+          <a href="{verify_url}" style="display:inline-block;background:#16a34a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;margin:16px 0">Verify Email</a>
+          <p style="color:#6b7280;font-size:12px">If you did not create this account, ignore this email.</p>
+        </div>"""
+        await send_email(user_data.email, "Verify your Afghan Health Portal account", html)
+    except Exception as e:
+        logger.error(f"Verification email failed: {e}")
 
     # Create JWT token
     access_token = create_access_token({"sub": user_id})
@@ -914,7 +950,7 @@ async def translate_text(request: TranslateRequest, current_user: User = Depends
             api_key=GOOGLE_API_KEY,
             session_id=f"translate_{current_user.user_id}",
             system_message=f"You are a professional medical translator. Translate the following text from {source} to {target}. Only return the translation, nothing else."
-        ).with_model("gemini", "gemini-3.1-pro-preview")
+        )
         
         # Send translation request
         user_message = UserMessage(text=request.text)
@@ -2246,6 +2282,8 @@ async def list_doctors(
     max_fee: Optional[float] = None,
     verified_only: bool = False,
     language: Optional[str] = None,
+    city: Optional[str] = None,
+    search: Optional[str] = None,
 ):
     """Public listing of all doctors with their location and profile data."""
     query: dict = {"user_type": "Doctor"}
@@ -2257,6 +2295,15 @@ async def list_doctors(
         query["profile_data.languages"] = {"$regex": language, "$options": "i"}
     if max_fee is not None:
         query["profile_data.consultation_fee"] = {"$lte": max_fee}
+    if city:
+        query["profile_data.clinic_address"] = {"$regex": city, "$options": "i"}
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"profile_data.specialty": {"$regex": search, "$options": "i"}},
+            {"profile_data.hospital": {"$regex": search, "$options": "i"}},
+            {"profile_data.clinic_address": {"$regex": search, "$options": "i"}},
+        ]
 
     doctors = await db.users.find(
         query,
@@ -2539,6 +2586,75 @@ async def reset_password(req: PasswordResetConfirm):
     await db.password_resets.update_one({"token": req.token}, {"$set": {"used": True}})
 
     return {"message": "Password updated successfully"}
+
+
+@api_router.post("/auth/verify-email")
+async def verify_email(req: EmailVerifyToken):
+    """Verify a user's email address using the token sent at registration."""
+    record = await db.email_verifications.find_one({"token": req.token, "used": False}, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=400, detail="Invalid or already-used verification token")
+
+    expires_at = datetime.fromisoformat(record["expires_at"])
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Verification token has expired. Please request a new one.")
+
+    await db.users.update_one(
+        {"user_id": record["user_id"]},
+        {"$set": {"is_email_verified": True}}
+    )
+    await db.email_verifications.update_one({"token": req.token}, {"$set": {"used": True}})
+    return {"message": "Email verified successfully"}
+
+
+@api_router.post("/auth/resend-verification")
+async def resend_verification(current_user: User = Depends(get_current_user)):
+    """Resend the email verification link for the current user."""
+    user_doc = await db.users.find_one({"user_id": current_user.user_id}, {"_id": 0})
+    if user_doc and user_doc.get("is_email_verified"):
+        raise HTTPException(status_code=400, detail="Email is already verified")
+
+    verification_token = uuid.uuid4().hex
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    await db.email_verifications.update_one(
+        {"user_id": current_user.user_id, "used": False},
+        {"$set": {"token": verification_token, "expires_at": expires_at}},
+        upsert=True,
+    )
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3008")
+    verify_url = f"{frontend_url}/verify-email/{verification_token}"
+    html = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:24px">
+      <h2 style="color:#16a34a">Verify your email — Afghan Health Portal</h2>
+      <p>Hello {current_user.name},</p>
+      <p>Click the button below to verify your email (link valid 24 hours):</p>
+      <a href="{verify_url}" style="display:inline-block;background:#16a34a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;margin:16px 0">Verify Email</a>
+    </div>"""
+    try:
+        await send_email(current_user.email, "Verify your Afghan Health Portal account", html)
+    except Exception as e:
+        logger.error(f"Resend verification failed: {e}")
+
+    return {
+        "message": "Verification email sent",
+        "dev_token": verification_token if not RESEND_API_KEY else None,
+    }
+
+
+@api_router.put("/auth/password")
+async def change_password(req: PasswordChangeRequest, current_user: User = Depends(get_current_user)):
+    """Change password for the authenticated user (requires current password)."""
+    user_doc = await db.users.find_one({"user_id": current_user.user_id}, {"_id": 0})
+    if not user_doc or not verify_password(req.current_password, user_doc.get("password", "")):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    await db.users.update_one(
+        {"user_id": current_user.user_id},
+        {"$set": {"password": hash_password(req.new_password)}}
+    )
+    return {"message": "Password changed successfully"}
 
 
 # ============= SERVICE TICKETS (Biomedical Engineer) =============
